@@ -18,18 +18,24 @@ work-inappropriate ones on a work machine).
 
 ## Installing a skill
 
-Copy the skill's folder into your user skills directory, then reload:
+Use the install helper — it copies a named skill (or several) into
+`~/.claude/skills/`, so you install only what you want on a given machine:
 
 ```bash
 # macOS / Linux
-cp -r skills/find-session ~/.claude/skills/
+./install.sh                 # list available skills (installs nothing)
+./install.sh find-session    # install one (or several, space-separated)
+./install.sh --all           # install everything
 
 # Windows (PowerShell)
-Copy-Item -Recurse skills\find-session $HOME\.claude\skills\
+.\install.ps1                # list
+.\install.ps1 find-session   # install
+.\install.ps1 -All           # install everything
 ```
 
-Then run `/reload-skills` in Claude Code (or restart it). Invoke with
-`/find-session`.
+Then run `/reload-skills` in Claude Code (or restart it), and invoke with
+`/find-session`. Prefer a manual copy? `cp -r skills/find-session ~/.claude/skills/`
+does the same thing.
 
 ## Layout
 
