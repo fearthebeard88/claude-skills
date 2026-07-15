@@ -1,0 +1,9 @@
+# Normalize all text files to LF in the repo and on checkout (every platform).
+# The scanner scripts deliberately emit LF-only, byte-identical output across
+# Python and PowerShell; keeping the source LF too avoids autocrlf surprises.
+* text=auto eol=lf
+
+# Belt-and-suspenders for the script types.
+*.py  text eol=lf
+*.ps1 text eol=lf
+*.md  text eol=lf
