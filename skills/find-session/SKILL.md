@@ -152,9 +152,12 @@ you already assembled.
 
 **You cannot resume it for them from inside this session** — launching
 `claude --resume` via a tool call spawns a broken nested instance, not a
-terminal handoff. Tell the user to run it themselves: the cleanest way is to type
-it at their prompt with a leading `!` (e.g. `! cd "…" && claude --resume …`), or
-paste it into a fresh terminal. Present the command in a copy-ready code block.
+terminal handoff. The same is true of the `!` prefix: it runs the command
+*inside* the current session, so it spawns the same broken nested instance (it
+fails with "No deferred tool marker found in the resumed session"). Do NOT
+recommend `!` for resuming. Tell the user to run the command in a **separate,
+fresh terminal** (or to exit this session first, then run it). Present the
+command in a copy-ready code block.
 
 ## Notes
 
