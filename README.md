@@ -66,22 +66,28 @@ your own home path):
     "allow": [
       // Windows (PowerShell tool). The * covers the <version> dir; the literal
       // tail keeps this scoped to find-session's scanner, not the whole plugin.
-      "PowerShell(& \"C:\\Users\\<you>\\.claude\\plugins\\cache\\fearthebeard88-skills\\fear\\*\\skills\\find-session\\scan-sessions.ps1\"*)"
+      // Backslashes are DOUBLED (\\\\ in the file) — see the gotcha below.
+      "PowerShell(& \"C:\\\\Users\\\\<you>\\\\.claude\\\\plugins\\\\cache\\\\fearthebeard88-skills\\\\fear\\\\*\\\\skills\\\\find-session\\\\scan-sessions.ps1\"*)"
     ]
   }
 }
 ```
 
-Note: a `*` in a Bash/PowerShell rule matches any characters *including* `\`, so
-anchoring on the literal `…\skills\find-session\scan-sessions.ps1` tail is what
-keeps this narrow — it won't blanket-approve other scripts the plugin might ship.
+Two things that make or break this rule:
+- **Doubled backslashes.** The matcher compares against the command with
+  *escaped* backslashes, so the rule's path needs `\\` between segments — which
+  is `\\\\` in the JSON file. A single-backslash rule silently never matches.
+- **Narrowing.** A `*` matches any characters *including* `\`, so anchoring on
+  the literal `…\skills\find-session\scan-sessions.ps1` tail is what keeps this
+  scoped to this one script rather than blanket-approving the whole plugin.
 
-> The exact match string for a script invocation isn't documented, so treat the
-> shape above as intended-but-unverified. Reliable path: on the prompt choose
-> **"Yes, don't ask again,"** take what Claude Code writes to
-> `.claude/settings.local.json`, then in *user* settings replace the `<version>`
-> segment with `*` so it stays valid across updates. A wrong rule is **inert**
-> (it can only fail to match, never over-permit), so iterating is safe.
+Not sure of the exact string? Let the prompt write it: choose **"Yes, don't ask
+again"** once, copy the rule Claude Code drops into `.claude/settings.local.json`
+(it'll have the correct doubled backslashes), then in *user* settings swap the
+`<version>` segment for `*` and add a trailing `*` for args.
+
+> A wrong rule is **inert** — it can only fail to match (you keep getting the
+> prompt), never over-permit — so iterating on the exact form is safe.
 
 ## Layout
 
