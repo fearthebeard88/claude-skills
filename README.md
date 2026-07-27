@@ -49,9 +49,10 @@ array; swap in your own home path:
 {
   "permissions": {
     "allow": [
-      // Windows — runs via the PowerShell tool:
-      "PowerShell(C:\\Users\\<you>\\.claude\\skills\\find-session\\scan-sessions.ps1 *)",
-      // macOS / Linux — runs via the Bash tool:
+      // Windows — runs via the PowerShell tool. Confirmed format: the matcher
+      // keys on the literal `& "..."` call operator; trailing * covers args.
+      "PowerShell(& \"C:\\Users\\<you>\\.claude\\skills\\find-session\\scan-sessions.ps1\"*)",
+      // macOS / Linux — runs via the Bash tool (best-guess; confirm as below):
       "Bash(python3 /home/<you>/.claude/skills/find-session/scan-sessions.py *)"
     ]
   }
@@ -60,13 +61,18 @@ array; swap in your own home path:
 
 Restart Claude Code afterward — permission rules load at startup.
 
-> **If it still prompts:** the exact match string for a *script invocation*
-> (call operator, quoting, path normalization) isn't documented, so the rule
-> above is a best-guess shape. Choose **"Yes, don't ask again"** on the prompt
-> and take whatever rule Claude Code writes to `.claude/settings.local.json` —
-> that's the guaranteed-correct form for your platform; copy it up into user
-> settings for it to apply everywhere. A wrong rule is **inert** (it can only
-> fail to match, never over-permit), so iterating is safe.
+> **The Windows form above is confirmed** — it's the shape Claude Code itself
+> generated (via "Yes, don't ask again"), generalized with a trailing `*` so it
+> covers `--pick`/`--query`/etc. The **Bash form is still a best-guess**, since
+> the script-invocation match string isn't documented and we haven't captured it
+> on Unix yet.
+>
+> **If a rule still prompts:** choose **"Yes, don't ask again"** on the prompt and
+> take whatever rule Claude Code writes to `.claude/settings.local.json` — that's
+> the guaranteed-correct form for your platform. Copy it into *user* settings
+> (and add a trailing `*` to cover arguments) so it applies from every directory.
+> A wrong rule is **inert** (it can only fail to match, never over-permit), so
+> iterating is safe.
 
 ## Layout
 
