@@ -1,91 +1,100 @@
 # claude-skills
 
-A personal collection of [Claude Code](https://claude.com/claude-code) skills
-and their supporting scripts. This repo is the **source of truth**; skills are
-**copied** into `~/.claude/skills/` on each machine where you want them — so you
-can keep a skill in the repo without installing it everywhere (e.g. skip
-work-inappropriate ones on a work machine).
+A personal [Claude Code](https://claude.com/claude-code) **plugin marketplace** —
+`fearthebeard88-skills` — hosting the **`fear`** plugin: a collection of skills
+and their supporting scripts. Installed as a plugin, it **auto-updates** — push
+here and each machine pulls the change shortly after its next start.
 
-> These are Claude Code skills specifically — the `SKILL.md` format and the tools
-> they drive are Anthropic's. They aren't portable to other agents (Cursor,
-> Copilot, Gemini CLI, …) as-is.
+> Claude Code skills specifically — the `SKILL.md` format and the tools they
+> drive are Anthropic's. Not portable to other agents (Cursor, Copilot, Gemini
+> CLI, …) as-is.
 
 ## Skills
 
-| Skill | What it does |
-|-------|--------------|
-| [`find-session`](skills/find-session) | Search and resume past Claude Code sessions across **all** project directories — the cross-directory counterpart to the built-in `/resume`. Runtime-portable (Python or PowerShell, with an agent-native fallback). |
+| Skill | Invoke | What it does |
+|-------|--------|--------------|
+| [`find-session`](plugins/fear/skills/find-session) | `/fear:find-session` | Search and resume past Claude Code sessions across **all** project directories — the cross-directory counterpart to the built-in `/resume`. Runtime-portable (PowerShell on Windows, Python on Unix, agent-native fallback). |
 
-## Installing a skill
+Skills are namespaced by the plugin, so you invoke them as `/fear:<skill>`.
 
-Use the install helper — it copies a named skill (or several) into
-`~/.claude/skills/`, so you install only what you want on a given machine:
+## Install
 
-```bash
-# macOS / Linux
-./install.sh                 # list available skills (installs nothing)
-./install.sh find-session    # install one (or several, space-separated)
-./install.sh --all           # install everything
+Add the marketplace and enable the plugin — via the CLI:
 
-# Windows (PowerShell)
-.\install.ps1                # list
-.\install.ps1 find-session   # install
-.\install.ps1 -All           # install everything
+```
+/plugin marketplace add fearthebeard88/claude-skills
+/plugin install fear@fearthebeard88-skills
 ```
 
-Then run `/reload-skills` in Claude Code (or restart it), and invoke with
-`/find-session`. Prefer a manual copy? `cp -r skills/find-session ~/.claude/skills/`
-does the same thing.
+…or declaratively in your **user** settings (`~/.claude/settings.json`), which
+also switches on auto-update:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "fearthebeard88-skills": {
+      "source": { "source": "github", "repo": "fearthebeard88/claude-skills" },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "fear@fearthebeard88-skills": true
+  }
+}
+```
+
+Restart Claude Code (or `/reload-plugins`). With `autoUpdate: true`, later pushes
+are pulled automatically shortly after startup, with a prompt to `/reload-plugins`.
 
 ## Removing the per-run permission prompt (optional)
 
-A skill that runs a script triggers a permission prompt each time — Claude Code
-gates the shell tool call. To pre-approve it, add a **narrow** allow rule
-(scoped to the scanner script, *not* a blanket runtime allow) to your **user**
-settings, `~/.claude/settings.json`. Merge into any existing `permissions.allow`
-array; swap in your own home path:
+A skill that runs a script prompts for permission each time. Pre-approve it with
+a **narrow** allow rule in your **user** settings. As a plugin, the scanner runs
+from a *versioned* cache path:
+
+```
+~/.claude/plugins/cache/fearthebeard88-skills/fear/<version>/skills/find-session/scan-sessions.ps1
+```
+
+so scope the rule to the plugin directory and let a trailing `*` absorb the
+version segment **and** the args — otherwise the rule breaks on every update:
 
 ```jsonc
 {
   "permissions": {
     "allow": [
-      // Windows — runs via the PowerShell tool. Confirmed format: the matcher
-      // keys on the literal `& "..."` call operator; trailing * covers args.
-      "PowerShell(& \"C:\\Users\\<you>\\.claude\\skills\\find-session\\scan-sessions.ps1\"*)",
-      // macOS / Linux — runs via the Bash tool (best-guess; confirm as below):
-      "Bash(python3 /home/<you>/.claude/skills/find-session/scan-sessions.py *)"
+      // Windows (PowerShell tool). Trailing * after the plugin dir survives version bumps.
+      "PowerShell(& \"C:\\Users\\<you>\\.claude\\plugins\\cache\\fearthebeard88-skills\\fear\\*)"
     ]
   }
 }
 ```
 
-Restart Claude Code afterward — permission rules load at startup.
-
-> **The Windows form above is confirmed** — it's the shape Claude Code itself
-> generated (via "Yes, don't ask again"), generalized with a trailing `*` so it
-> covers `--pick`/`--query`/etc. The **Bash form is still a best-guess**, since
-> the script-invocation match string isn't documented and we haven't captured it
-> on Unix yet.
->
-> **If a rule still prompts:** choose **"Yes, don't ask again"** on the prompt and
-> take whatever rule Claude Code writes to `.claude/settings.local.json` — that's
-> the guaranteed-correct form for your platform. Copy it into *user* settings
-> (and add a trailing `*` to cover arguments) so it applies from every directory.
-> A wrong rule is **inert** (it can only fail to match, never over-permit), so
-> iterating is safe.
+> The exact match string for a script invocation isn't documented, so treat the
+> shape above as intended-but-unverified. Reliable path: on the prompt choose
+> **"Yes, don't ask again,"** take what Claude Code writes to
+> `.claude/settings.local.json`, then in *user* settings replace the `<version>`
+> segment with `*` so it stays valid across updates. A wrong rule is **inert**
+> (it can only fail to match, never over-permit), so iterating is safe.
 
 ## Layout
 
 ```
-skills/
-  <skill-name>/
-    SKILL.md          # the skill definition (name, description, instructions)
-    *.py / *.ps1      # supporting scripts, if any
+.claude-plugin/
+  marketplace.json                 # marketplace catalog (lists plugins)
+plugins/
+  fear/
+    .claude-plugin/plugin.json     # plugin manifest
+    skills/
+      find-session/
+        SKILL.md                   # skill definition
+        scan-sessions.py / .ps1    # supporting scripts (kept behaviorally identical)
 ```
 
 ## Developing
 
-Edit here in the repo (the source of truth), then re-copy the changed skill into
-`~/.claude/skills/` to test it live. Keep any parallel script implementations
-(e.g. a `.py` and a `.ps1`) behaviorally identical — see each skill's `SKILL.md`
-for its own sync notes.
+Edit here and push. Machines with `autoUpdate: true` pull it automatically on
+their next start; the current session keeps the version it launched with until
+`/reload-plugins`. Keep parallel script implementations (`.py` / `.ps1`)
+byte-for-byte equivalent in output — see each skill's `SKILL.md` for its own
+sync notes and language traps.
