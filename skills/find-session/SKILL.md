@@ -16,31 +16,41 @@ directory, one `.jsonl` per session. Each session's AI title, real `cwd`, and
 last-active time are read out for display (plus the last-prompt preview on
 demand).
 
-## Step 1 — Scan (portable dispatch)
+## Step 1 — Scan (pick the runtime by OS)
 
-There is no single scripting runtime guaranteed on every machine (native Claude
-Code installs bundle none). So detect what's available and use it, in this
-order — **stop at the first hit:**
+You already know the platform you're on, so **choose the runtime by OS — no
+runtime probing.** Each platform uses its always-present native shell, so there
+is no Git Bash dependency on Windows and no runtime assumption elsewhere. This
+also makes each platform's command a single, stable form that can be
+allow-listed narrowly (see below), so the skill stops prompting for permission.
 
-| Runtime found on PATH | Command to run |
-|---|---|
-| `python3` / `python` | `<py> "<skill-dir>/scan-sessions.py" <args>` |
-| `pwsh` / `powershell` | `<ps> -NoProfile -ExecutionPolicy Bypass -File "<skill-dir>/scan-sessions.ps1" <args>` |
-| none of the above | **agent-native fallback** (Step 1b) |
+- **Windows** → run `scan-sessions.ps1` via the **PowerShell tool**:
 
-`<skill-dir>` is printed when the skill loads. **Detect AND verify** each
-candidate — a name resolving on PATH is not enough. Probe it and use the first
-that actually runs; otherwise fall through:
+  ```
+  & "<skill-dir>\scan-sessions.ps1" <args>
+  ```
 
-- Python probe: `<py> -c "print(1)"` must print `1` and exit 0.
-- PowerShell probe: `<ps> -NoProfile -Command "exit 0"` must exit 0.
+  Windows PowerShell 5.1+ ships with every Windows install, so it's always
+  there. We never call `python` on Windows — which also sidesteps the Store
+  `python3`/`python` *App Execution Alias* stub (a fake that resolves on PATH
+  but fails when run).
 
-> ⚠️ **Windows footgun:** Windows ships a `python3` (and `python`) *App Execution
-> Alias* stub at `…\WindowsApps\` that resolves on PATH but, when run, only
-> prints "Python was not found…" and exits non-zero. The probe above is what
-> catches it — when `python3` fails the probe, fall through to `python`, then to
-> PowerShell (`powershell.exe` is always present on Windows), then to
-> agent-native. Never dispatch to a candidate you haven't probed.
+- **macOS / Linux** → run `scan-sessions.py` via the **Bash tool**:
+
+  ```
+  python3 "<skill-dir>/scan-sessions.py" <args>
+  ```
+
+  `python3` is near-universal on Unix. Only if it's genuinely missing, fall
+  back — try `python`, then `pwsh -NoProfile -File "<skill-dir>/scan-sessions.ps1"`,
+  then the agent-native path (Step 1b).
+
+`<skill-dir>` is printed when the skill loads.
+
+> **Permission allow-list:** the Windows command above is invoked identically
+> every run, so a single narrow rule in `settings.json` (scoped to the
+> `scan-sessions.ps1` path, not a blanket runtime allow) pre-approves it and
+> removes the per-run permission prompt.
 
 Both scripts share ONE contract, so `<args>` is identical either way:
 
