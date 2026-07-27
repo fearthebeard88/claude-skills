@@ -56,19 +56,25 @@ from a *versioned* cache path:
 ~/.claude/plugins/cache/fearthebeard88-skills/fear/<version>/skills/find-session/scan-sessions.ps1
 ```
 
-so scope the rule to the plugin directory and let a trailing `*` absorb the
-version segment **and** the args — otherwise the rule breaks on every update:
+Wildcard **only the version segment** and keep the rest of the path literal, so
+the rule stays scoped to *this one script* yet survives version bumps (swap in
+your own home path):
 
 ```jsonc
 {
   "permissions": {
     "allow": [
-      // Windows (PowerShell tool). Trailing * after the plugin dir survives version bumps.
-      "PowerShell(& \"C:\\Users\\<you>\\.claude\\plugins\\cache\\fearthebeard88-skills\\fear\\*)"
+      // Windows (PowerShell tool). The * covers the <version> dir; the literal
+      // tail keeps this scoped to find-session's scanner, not the whole plugin.
+      "PowerShell(& \"C:\\Users\\<you>\\.claude\\plugins\\cache\\fearthebeard88-skills\\fear\\*\\skills\\find-session\\scan-sessions.ps1\"*)"
     ]
   }
 }
 ```
+
+Note: a `*` in a Bash/PowerShell rule matches any characters *including* `\`, so
+anchoring on the literal `…\skills\find-session\scan-sessions.ps1` tail is what
+keeps this narrow — it won't blanket-approve other scripts the plugin might ship.
 
 > The exact match string for a script invocation isn't documented, so treat the
 > shape above as intended-but-unverified. Reliable path: on the prompt choose
