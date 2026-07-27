@@ -19,7 +19,7 @@ from pathlib import Path
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--query", default="")
-ap.add_argument("--limit", type=int, default=40)
+ap.add_argument("--limit", type=int, default=15)
 # Pagination: skip the first N ranked rows, then show --limit of them. Row
 # numbers stay global (offset+1, offset+2, …) so --pick lines up across pages.
 ap.add_argument("--offset", type=int, default=0)

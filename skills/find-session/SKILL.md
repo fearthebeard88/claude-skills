@@ -45,10 +45,11 @@ that actually runs; otherwise fall through:
 Both scripts share ONE contract, so `<args>` is identical either way:
 
 - `--query "<terms>"` — filter + rank (omit for a plain recency listing)
-- `--limit <N>` — max rows (default 40). Honor explicit user requests: "show 30"
-  → `--limit 30`; "show everything" → a large `--limit` (e.g. 1000).
-- `--offset <N>` — pagination: skip the first N ranked rows. Next page after a
-  `--limit 15` listing is `--offset 15`, then `--offset 30`, etc.
+- `--limit <N>` — max rows (**default 15 = one page**). Honor explicit user
+  requests: "show 30" → `--limit 30`; "show everything" → a large `--limit`
+  (e.g. 1000).
+- `--offset <N>` — pagination: skip the first N ranked rows. Since a page is 15,
+  the next page is `--offset 15`, then `--offset 30`, etc.
 - `--min-size-kb <N>` — stub threshold (default 3; pass `0` to include empty/
   aborted session stubs when hunting one that isn't showing up)
 - `--preview` — append a `preview` (last-prompt) column. Off by default to keep
@@ -125,10 +126,14 @@ Number rows by **global rank**: `offset + 1`, `offset + 2`, … (so page 2 with
 resume, and `--pick` uses the same global numbering — keep them aligned. `dir`
 is the script's short label (`~`/basename); offer the full path on request.
 
+A listing is **one page of 15 by default** (the script's `--limit` default) —
+don't pass `--limit` unless the user asks for a different count. When more rows
+exist beyond the page, say so and mention they can ask for the next page
+(`--offset 15`) or a larger count (`--limit`).
+
 If several titles look alike and you can't tell them apart, re-run with
 `--preview` and use the prompt text to disambiguate. If nothing matched, say so
-and offer to list recent sessions instead. When more rows exist beyond the page,
-mention that they can ask for more (`--limit`) or the next page (`--offset`).
+and offer to list recent sessions instead.
 
 ## Step 3 — Resume
 

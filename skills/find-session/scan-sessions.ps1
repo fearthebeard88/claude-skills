@@ -13,7 +13,7 @@
 # Parse GNU-style flags manually so the invocation matches scan-sessions.py
 # ("--query" / "--limit" / "--min-size-kb") rather than PowerShell's -Name form.
 $Query = ""
-$Limit = 40
+$Limit = 15
 # Hide aborted/empty stubs by default. Real sessions are >~20 KB; empty starts
 # are <3 KB. Pass --min-size-kb 0 to show everything.
 $MinSizeKB = 3.0
