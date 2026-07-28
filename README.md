@@ -46,49 +46,6 @@ also switches on auto-update:
 Restart Claude Code (or `/reload-plugins`). With `autoUpdate: true`, later pushes
 are pulled automatically shortly after startup, with a prompt to `/reload-plugins`.
 
-## Removing the per-run permission prompt (optional)
-
-A skill that runs a script prompts for permission each time. Pre-approve it with
-a **narrow** allow rule in your **user** settings. As a plugin, the scanner runs
-from a *versioned* cache path:
-
-```
-~/.claude/plugins/cache/fearthebeard88-skills/fear/<version>/skills/find-session/scan-sessions.ps1
-```
-
-Wildcard **only the version segment** and keep the rest of the path literal, so
-the rule stays scoped to *this one script* yet survives version bumps (swap in
-your own home path):
-
-```jsonc
-{
-  "permissions": {
-    "allow": [
-      // Windows (PowerShell tool). The * covers the <version> dir; the literal
-      // tail keeps this scoped to find-session's scanner, not the whole plugin.
-      // Backslashes are DOUBLED (\\\\ in the file) — see the gotcha below.
-      "PowerShell(& \"C:\\\\Users\\\\<you>\\\\.claude\\\\plugins\\\\cache\\\\fearthebeard88-skills\\\\fear\\\\*\\\\skills\\\\find-session\\\\scan-sessions.ps1\"*)"
-    ]
-  }
-}
-```
-
-Two things that make or break this rule:
-- **Doubled backslashes.** The matcher compares against the command with
-  *escaped* backslashes, so the rule's path needs `\\` between segments — which
-  is `\\\\` in the JSON file. A single-backslash rule silently never matches.
-- **Narrowing.** A `*` matches any characters *including* `\`, so anchoring on
-  the literal `…\skills\find-session\scan-sessions.ps1` tail is what keeps this
-  scoped to this one script rather than blanket-approving the whole plugin.
-
-Not sure of the exact string? Let the prompt write it: choose **"Yes, don't ask
-again"** once, copy the rule Claude Code drops into `.claude/settings.local.json`
-(it'll have the correct doubled backslashes), then in *user* settings swap the
-`<version>` segment for `*` and add a trailing `*` for args.
-
-> A wrong rule is **inert** — it can only fail to match (you keep getting the
-> prompt), never over-permit — so iterating on the exact form is safe.
-
 ## Layout
 
 ```
