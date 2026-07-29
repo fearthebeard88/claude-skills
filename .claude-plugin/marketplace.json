@@ -9,7 +9,7 @@
       "name": "fear",
       "source": "./plugins/fear",
       "description": "Personal Claude Code skill collection (find-session, and more over time).",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": {
         "name": "fearthebeard88"
       }

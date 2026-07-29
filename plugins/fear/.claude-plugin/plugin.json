@@ -1,7 +1,7 @@
 {
   "name": "fear",
   "description": "Personal Claude Code skill collection. Skills are namespaced under `fear:` (e.g. /fear:find-session).",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": {
     "name": "fearthebeard88"
   }
