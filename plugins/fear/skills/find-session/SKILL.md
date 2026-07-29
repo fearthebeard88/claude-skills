@@ -65,16 +65,17 @@ Both scripts share ONE contract, so `<args>` is identical either way:
 - `--preview` — append a `preview` (last-prompt) column. Off by default to keep
   output lean; turn it on only when several titles are similar and you need the
   prompt text to tell them apart.
-- `--pick <N>` — **resume mode.** Instead of listing, print just the ready-to-run
-  command for row `N` (1-based) of the same ranking. See Step 3.
+- `--pick <id>` — **resume mode.** Instead of listing, print just the ready-to-run
+  command for that session. Pass the **short id** from column 1. See Step 3.
 
 **List output is tab-separated, display-only**, one row per line:
-`title⇥dir⇥last-active` (dir is a short label: `~` for home, else the folder
-basename; `+⇥preview` with `--preview`). Already filtered/ranked, newest-active
-first when no query. No UUIDs or full paths here — those are the token-heavy
-fields, and they're only needed to resume, so they're deferred to `--pick`
-(Step 3). If the user's request has no obvious search terms, run with no
-`--query`.
+`short-id⇥title⇥dir⇥last-active` (dir is a short label: `~` for home, else the
+folder basename; `+⇥preview` with `--preview`). Already filtered/ranked,
+newest-active first when no query. The short id is the first 8 hex chars of the
+session uuid — it's the handle you pass to `--pick`. Full uuids and full paths
+stay out of the listing; they're only needed to resume, so they're deferred to
+`--pick` (Step 3). If the user's request has no obvious search terms, run with
+no `--query`.
 
 The **current session is auto-excluded** — the scripts read
 `CLAUDE_CODE_SESSION_ID` from the environment and skip it (no point resuming what
@@ -90,7 +91,19 @@ you're already in). Harmless no-op when run outside Claude Code.
 > via `sys.stdout.buffer`, PowerShell via `[Console]::Out.Write` + a no-BOM
 > `UTF8Encoding`) because their defaults disagree on newlines (Python text mode
 > → CRLF on Windows; PowerShell → CRLF) — a stray `\r` would also corrupt a
-> pasted resume command.
+> pasted resume command. (3) Sorts must break ties on `sortKey` (the uuid with
+> dashes stripped). Equal mtimes are common, and without an explicit tie-break
+> Python falls back to filename order while PowerShell falls back to directory
+> order — the two listings silently diverge. Dashes are stripped because
+> PowerShell's culture-aware string sort and Python's ordinal sort disagree on
+> where `-` lands; they agree on plain lowercase hex. (4) Inside a PowerShell
+> hash literal, `-replace '-', ''` needs parentheses — the comma otherwise ends
+> the entry and the parse error cascades to the end of the file.
+>
+> Because `[Console]::Out.Write` writes to the console handle directly, it
+> **bypasses the PowerShell pipeline** — `& .\scan-sessions.ps1 | …` receives
+> nothing. To capture output for a diff, redirect a child process's stdout
+> (`powershell.exe -NoProfile -File scan-sessions.ps1 … > out.txt`).
 
 ### Step 1b — Agent-native fallback (no runtime available)
 
@@ -108,11 +121,20 @@ own always-present tools, so it works anywhere:
    first `cwd`: a relocated session's origin is a dead end (nothing's there and
    resume would fail). Keep this `cwd` — you need it for the resume command (no
    `--pick` call exists in this path).
-4. **Skip the current session** — drop the file whose id matches
-   `$CLAUDE_CODE_SESSION_ID`. Treat a session with **no `aiTitle` and no
-   non-empty `lastPrompt`** as an empty stub and drop it too (the tool-only
-   stand-in for the `--min-size-kb` filter).
-5. Rank/present exactly as the scripts would (same columns as Step 2).
+4. **If a file yields no `aiTitle` and no `lastPrompt` text, don't write it off
+   as untitled** — a `last-prompt` record has two shapes, and the
+   `{"type":"last-prompt","leafUuid":…}` form carries no text at all. Re-grep
+   just that file for `"type":"user"` and fall back, strongest first: the last
+   real user prose (skip records with `"isSidechain":true` or `"isMeta":true`,
+   skip `tool_result`-only content, skip `<local-command-*>` / `<command-*>` /
+   `<system-reminder>` wrappers), then the last `<command-name>` value (e.g.
+   `/fear:find-session`). Only a session with none of those is `(untitled)`.
+5. **Skip the current session** — drop the file whose id matches
+   `$CLAUDE_CODE_SESSION_ID`. Treat a session with **nothing from step 4
+   either** as an empty stub and drop it too (the tool-only stand-in for the
+   `--min-size-kb` filter).
+6. Rank/present exactly as the scripts would (same columns as Step 2), breaking
+   equal-timestamp ties on the session uuid so the order is reproducible.
 
 **When you use this fallback, you MUST prepend this notice to your reply** so the
 user knows why it's slower and how to speed it up:
@@ -135,9 +157,11 @@ overhead, and output is the uncached cost that hits the usage limit every run):
 ```
 
 Number rows by **global rank**: `offset + 1`, `offset + 2`, … (so page 2 with
-`--offset 15` starts at `16.`). Those numbers are what the user passes back to
-resume, and `--pick` uses the same global numbering — keep them aligned. `dir`
-is the script's short label (`~`/basename); offer the full path on request.
+`--offset 15` starts at `16.`). Those numbers are just for the user to point at.
+**Don't print the short ids** — they're noise to the user — but **do keep the
+row-number → short-id mapping from the scanner output**, because the short id
+is what Step 3 resumes by. `dir` is the script's short label (`~`/basename);
+offer the full path on request.
 
 A listing is **one page of 15 by default** (the script's `--limit` default) —
 don't pass `--limit` unless the user asks for a different count. When more rows
@@ -150,23 +174,32 @@ and offer to list recent sessions instead.
 
 ## Step 3 — Resume
 
-When the user picks a row number, get the command by re-running the scanner with
-`--pick <N>` **and the same `--query`/`--min-size-kb` you listed with** (so the
-row numbers line up). `N` is the global row number as displayed, so it works
-straight off a paginated page (`--pick 22` for row 22) — `--pick` ignores
-`--offset`/`--limit`. It prints exactly:
+When the user picks a row number, map it back to that row's **short id** and
+re-run the scanner with `--pick <short-id>`. It prints exactly:
 
 ```
 cd "<cwd>" && claude --resume <id>
 ```
 
-This one call is where the session's `cwd` + `id` are resolved — that's the whole
-reason the list stays lean. `&&` chains cleanly in bash, PowerShell 7, and cmd,
-and the stored `cwd` already carries the right path style for the platform the
-session ran on. (Row order is stable between the list and the `--pick`: the only
-file whose mtime shifts mid-session is the current one, which is auto-excluded.)
-In the agent-native path there's no `--pick` — build the same line from the `cwd`
-you already assembled.
+**Always resume by id, never by row number.** Rows are ranked by mtime, and any
+*other* Claude Code session the user has open in another terminal writes to its
+file continuously — that session climbs to the top mid-conversation and shifts
+every row beneath it. A row number captured before that shift then points at the
+wrong session, and the wrong resume command comes back with no error to warn
+you. An id is a stable handle and can't drift. (`--pick <N>` still accepts a
+1–4 digit row number for direct CLI use, and carries exactly that risk.)
+
+An id lookup is resolved against every session independently of the ranking, so
+you do **not** need to re-pass the `--query`, `--offset`, `--limit`, or
+`--min-size-kb` you listed with. It's also much faster than a listing — only the
+matching session's file gets parsed. If a prefix matches more than one session
+the scanner says so and lists the candidates rather than guessing.
+
+This one call is where the session's `cwd` + full uuid are resolved — that's the
+whole reason the list stays lean. `&&` chains cleanly in bash, PowerShell 7, and
+cmd, and the stored `cwd` already carries the right path style for the platform
+the session ran on. In the agent-native path there's no `--pick` — build the same
+line from the `cwd` you already assembled.
 
 **You cannot resume it for them from inside this session** — launching
 `claude --resume` via a tool call spawns a broken nested instance, not a
@@ -185,7 +218,15 @@ command in a copy-ready code block.
   only resumable top-level sessions are shown.
 - Empty/aborted stubs are hidden by default (scripts: `--min-size-kb 3`;
   agent-native: the no-title-no-prompt rule). Pass `--min-size-kb 0` to reveal
-  them.
+  them. `--pick <id>` ignores this filter entirely — an id is exact, so the
+  stub threshold can only get in its way.
+- **Titles fall back in four tiers**: the AI's `aiTitle`, then an inline
+  `lastPrompt`, then the last real user message, then the last slash command
+  (`/fear:find-session`). The fallbacks exist because a `last-prompt` record has
+  two shapes and the `leafUuid` pointer form carries no text — sessions using it
+  have no `aiTitle` either, so without the fallbacks they'd list as
+  `(untitled)` with an empty preview *and* be unmatchable by `--query`. Only a
+  genuinely contentless stub is `(untitled)` now.
 - Scanning is depth-1 only (`projects/<dir>/<id>.jsonl`); nested `subagents/`
   and `workflows/` transcript artifacts are never treated as sessions.
 - **Relocated sessions** (you `/cd`'d): a `/cd` moves the session's file into the
