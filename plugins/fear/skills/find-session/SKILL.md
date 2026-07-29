@@ -100,11 +100,14 @@ own always-present tools, so it works anywhere:
 1. **Glob** `*/*.jsonl` under `~/.claude/projects` (returns newest-first by
    mtime — that's your recency order). Ignore any `agent-*.jsonl` basenames.
 2. **Grep** those files (output_mode `content`, with line/file info) for
-   `"(aiTitle|lastPrompt|cwd|gitBranch|timestamp)":` in one call.
+   `"(aiTitle|lastPrompt|cwd|gitBranch|timestamp|relocatedCwd)":` in one call.
 3. Assemble per file: `title` = last `aiTitle`; `preview` = last `lastPrompt`
-   (truncate ~140 chars); `cwd` = first `cwd`; `lastActive` = last `timestamp`.
-   Keep `cwd` here — you'll need it for the resume command (no `--pick` call
-   exists in this path).
+   (truncate ~140 chars); `lastActive` = last `timestamp`. For `cwd`, use the
+   **relocation destination** — the last `relocatedCwd` if the session has any
+   (a `/cd` relocates the session), otherwise the **last** `cwd`. Never the
+   first `cwd`: a relocated session's origin is a dead end (nothing's there and
+   resume would fail). Keep this `cwd` — you need it for the resume command (no
+   `--pick` call exists in this path).
 4. **Skip the current session** — drop the file whose id matches
    `$CLAUDE_CODE_SESSION_ID`. Treat a session with **no `aiTitle` and no
    non-empty `lastPrompt`** as an empty stub and drop it too (the tool-only
@@ -185,5 +188,11 @@ command in a copy-ready code block.
   them.
 - Scanning is depth-1 only (`projects/<dir>/<id>.jsonl`); nested `subagents/`
   and `workflows/` transcript artifacts are never treated as sessions.
+- **Relocated sessions** (you `/cd`'d): a `/cd` moves the session's file into the
+  destination directory's folder and records `relocated`/`relocatedCwd`. The
+  scanner reports the **destination** (last `relocatedCwd`, else last `cwd`) as
+  the session's dir — not the origin it started in — so you see one live,
+  resumable entry at "the path it was changed to," not a dead-end pointing at
+  the old directory.
 - Scale is small (tens–hundreds of sessions), so a full scan every invocation is
   fine — no caching needed.

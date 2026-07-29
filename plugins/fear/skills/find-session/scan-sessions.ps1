@@ -71,7 +71,7 @@ if (Test-Path $root) {
             # Skip aborted/empty stubs unless asked to keep them.
             if (($file.Length / 1KB) -lt $MinSizeKB) { continue }
 
-            $title = $null; $prompt = $null; $cwd = $null; $branch = $null
+            $title = $null; $prompt = $null; $cwd = $null; $branch = $null; $relocated = $null
             foreach ($line in [System.IO.File]::ReadLines($file.FullName)) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
                 try { $rec = $line | ConvertFrom-Json } catch { continue }
@@ -79,11 +79,17 @@ if (Test-Path $root) {
                 # Titles/prompts are re-emitted as the session grows — keep last.
                 if ($t -eq "ai-title"    -and $rec.aiTitle)    { $title  = $rec.aiTitle }
                 if ($t -eq "last-prompt" -and $rec.lastPrompt) { $prompt = $rec.lastPrompt }
-                # cwd / branch are stable — take the first non-empty we see.
-                if (-not $cwd -and $rec.cwd) { $cwd = $rec.cwd }
+                # Take the LAST cwd, not the first: a /cd relocates the session,
+                # and we want the directory it ended up in (the resumable one),
+                # not the dead-end origin it started in.
+                if ($rec.cwd) { $cwd = $rec.cwd }
+                # A relocation records its destination explicitly — trust it over
+                # any transient trailing cwd.
+                if ($t -eq "relocated" -and $rec.relocatedCwd) { $relocated = $rec.relocatedCwd }
                 if (-not $branch -and $null -ne $rec.gitBranch) { $branch = $rec.gitBranch }
             }
 
+            if ($relocated) { $cwd = $relocated }
             if (-not $cwd) {
                 # Lossy fallback: decode the folder name (only for the rare
                 # session that somehow lacks a cwd record).

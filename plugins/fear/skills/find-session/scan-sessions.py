@@ -77,7 +77,7 @@ if root.is_dir():
             if st.st_size / 1024 < args.min_size_kb:
                 continue
 
-            title = prompt = cwd = branch = None
+            title = prompt = cwd = branch = relocated = None
             try:
                 text = f.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -97,12 +97,19 @@ if root.is_dir():
                     title = rec["aiTitle"]
                 if t == "last-prompt" and rec.get("lastPrompt"):
                     prompt = rec["lastPrompt"]
-                # cwd / branch are stable — take the first non-empty we see.
-                if not cwd and rec.get("cwd"):
+                # Take the LAST cwd, not the first: a /cd relocates the session,
+                # and we want the directory it ended up in (the resumable one),
+                # not the dead-end origin it started in.
+                if rec.get("cwd"):
                     cwd = rec["cwd"]
+                # A relocation records its destination explicitly — trust it over
+                # any transient trailing cwd.
+                if t == "relocated" and rec.get("relocatedCwd"):
+                    relocated = rec["relocatedCwd"]
                 if not branch and rec.get("gitBranch") is not None:
                     branch = rec["gitBranch"]
 
+            cwd = relocated or cwd
             if not cwd:
                 # Lossy fallback: decode the folder name (only for the rare
                 # session that somehow lacks a cwd record).
