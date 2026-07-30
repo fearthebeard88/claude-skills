@@ -285,7 +285,14 @@ exist beyond the page, say so and mention they can ask for the next page
 (`--offset 15`) or a larger count (`--limit`).
 
 If several titles look alike and you can't tell them apart, re-run with
-`--preview` and use the prompt text to disambiguate. **If a query matched nothing
+`--preview` and use the prompt text to disambiguate. **If two rows are identical
+in every column *and* `--preview` doesn't separate them either, they are duplicate
+sessions holding the same conversation** — usually an accidental double-start. Say
+that plainly instead of offering them as a meaningful choice: "rows 12 and 13 are
+duplicates of the same conversation, so either will do." Don't invent a
+distinction, and don't silently drop one — two sessions that merely *share a title*
+are very often different conversations days apart, which the dir and time columns
+already tell apart. **If a query matched nothing
 or looks like it missed, retry with `--deep` before concluding the session isn't
 there** — a plain query only sees titles and metadata, and the thing the user
 remembers was usually said mid-conversation. Only after `--deep` also comes back

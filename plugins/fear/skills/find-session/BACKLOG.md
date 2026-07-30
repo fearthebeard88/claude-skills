@@ -601,6 +601,49 @@ discarded before output.
   request, which was the underlying need. Not worth revisiting unless the store's
   shape changes a lot.
 
+### ~~E6~~ — REJECTED 2026-07-30 on measurement. Original entry below.
+
+E6 asked to check "whether this is annoying in practice or just cosmetic" before
+building. Measured on the real store (61 non-stub sessions), it is neither quite —
+it's rarer than described, and **both proposed remedies make things worse.**
+
+- **4 titles are shared, covering 8 rows (13%).** But **6 of those 8 are already
+  separated by the dir or time columns**, which every row carries. Two sessions
+  merely sharing a title are usually different conversations days apart — the two
+  titled `Clarify AI agent definition and Claude Code classification` are two weeks
+  apart in different directories, one about "Build Lesson 6 with the /handoff
+  exercise" and the other a glossary discussion.
+- **Only 2 rows of 61 (3%) are genuinely indistinguishable**, and they are
+  indistinguishable because the sessions are *identical*: same title, dir, time,
+  preview, and content (`"Reply with exactly: ok"` -> `"ok"`). Throwaway test
+  sessions that differ only by id. No column can separate them because there is
+  nothing to separate.
+- **Zero collisions occur within the default first page of 15.** A collision needs
+  title AND dir AND time-to-the-minute to match, which effectively requires
+  near-simultaneous duplicate sessions. Rare by construction, and it does not get
+  worse as the store grows, because what matters is collisions *within a page*.
+
+Why each proposed fix is counterproductive:
+
+- **Auto-enable `--preview` when titles collide within a page.** Measured:
+  `--preview` would separate **2** of the 8 colliding rows and **fail on 6** — while
+  6 were already separated by dir/time. So it adds a column for the rows that don't
+  need it and fails the ones that do. Strictly worse than doing nothing.
+- **Collapse duplicates into one row with a count.** Would have collapsed the two
+  `Clarify AI agent…` sessions, which are genuinely different conversations. That
+  hides a session the user might be looking for — an actively harmful failure mode,
+  and a silent one.
+
+Note the columns improved under E3 and B1 after this item was written: real
+activity timestamps replaced mtime (so same-titled sessions now show their true,
+usually distinct, times) and the dir column gained `@branch`. Part of E6's premise
+was dissolved by work done elsewhere.
+
+**Shipped instead:** one sentence of `SKILL.md` guidance for the only case the data
+supports — when two rows are identical *and* `--preview` doesn't separate them,
+say they're duplicates of the same conversation rather than presenting them as a
+meaningful choice, and don't silently drop either. No code change.
+
 ### E6 — group or flag near-duplicate sessions
 
 This store has several sessions sharing a title (`Build markdown browser
@@ -655,9 +698,13 @@ Dependency-ordered, not value-ordered. Each group is one coherent review.
 6. ~~**P1** (PowerShell regex extraction) — rejected on measured evidence.
    **E1** (deep content search) — shipped via option 1.~~ **Done 2026-07-30.**
 
-**The sequenced work is complete.** What remains is E6 (near-duplicate grouping,
-explicitly low-confidence) and the smaller notes, plus P1's successor if listing
+**The sequenced work is complete, and E6 is closed too** (rejected on measurement
+— see E6). What remains is only the smaller notes, plus P1's successor if listing
 performance ever becomes a real problem.
+
+Final tally: **twelve items shipped, three rejected on measured evidence** (E3's
+relative times, all of P1, all of E6). Every rejection carries the measurements
+that drove it, so none of them gets re-opened on intuition.
 
 Only **E1**, **P1**, **E6** and the smaller notes remain. Note that E2 has taken
 some pressure off E1: "find the session where we discussed X" is often really
