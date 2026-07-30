@@ -49,9 +49,14 @@ Follow-up: `SKILL.md` states the byte-identical contract in several places
 (the sync callout, the Step 1 output description, the `--pick` notes). It has to
 be rewritten to the new contract, or the docs and the code disagree.
 
-**Done — sequencing steps 1-5 (2026-07-30):** B6, P0, numeric-arg validation, B3,
-B4, E4, B1, E5, B2, E3 and E2 — all covered by `test-parity.py` and
-mutation-tested. Only step 6 (P1 → E1) and E6 remain. `SKILL.md` is rewritten to the relaxed contract. Details in
+**Done — sequencing steps 1-6 (2026-07-30):** B6, P0, numeric-arg validation, B3,
+B4, E4, B1, E5, B2, E3 and E2 shipped, all covered by `test-parity.py` and
+mutation-tested. **P1 rejected on measured evidence** (see P1). Only **E1** and
+**E6** remain, plus the smaller notes.
+
+Two items were closed by *rejection* rather than implementation — E3's relative
+times and all of P1. Both rejections are recorded with the measurements that drove
+them, so they don't get re-opened on intuition. `SKILL.md` is rewritten to the relaxed contract. Details in
 "Already fixed" below; the items are struck from the lists. Six extra divergences
 surfaced while testing and were fixed in the same passes — see the entries under
 "Already fixed". Four of them would not have been found by reading the code, and
@@ -301,6 +306,84 @@ every remaining item should extend:
 
 ## Performance
 
+### P1 — REJECTED 2026-07-30. Regex extraction is unsafe; nothing safe is measurable.
+
+**Closed with evidence rather than implemented.** Every avenue P1 proposed was
+costed, and each one is either unsafe or produces no measurable end-to-end
+improvement. Details first, then the original analysis for context.
+
+**Where the time actually goes** (real 19 MB store, min of 5 runs):
+
+| stage | Windows PowerShell 5.1 | PowerShell 7 |
+|-------|------------------------|--------------|
+| bare interpreter startup | 0.18 s | 0.29 s |
+| + script load (empty store) | 0.34 s | 0.43 s |
+| **full listing** | **1.84 s** | **2.78 s** |
+| …of which `ConvertFrom-Json` | ~1.01 s (**55%**) | ~0.54 s (23%) |
+| …of which `ReadLines` | 0.12 s | 0.07 s |
+| …of which other per-line work | ~0.37 s | **~1.74 s** |
+
+So parsing dominates on 5.1 but not on 7 — 7 is *slower overall* while parsing
+*faster*, because its per-line script work (property access, regex, function
+calls) costs ~1.7 s. Any parse optimisation therefore helps one host only.
+
+**1. Regex field extraction: UNSAFE.** Measured exhaustively — for all 7,732
+records, compare what a `"key"\s*:\s*"([^"]*)"` regex extracts against the parsed
+top-level value:
+
+| field | top-level on | regex **disagrees** on |
+|-------|--------------|------------------------|
+| `cwd` | 5,584 | **5,584 (100%)** |
+| `relocatedCwd` | 58 | **58 (100%)** |
+| `type` | 7,732 | **3,444 (45%)** |
+| `timestamp` | 5,726 | **372** |
+| `lastPrompt` | 450 | 12 |
+| `gitBranch` | 5,584 | 0 |
+| `aiTitle` | 446 | 0 |
+
+`cwd` fails on every single record because JSON-escaped backslashes
+(`"C:\\Users\\…"`) don't match the decoded value. `type` fails because nested
+content blocks carry `"type":"text"` earlier in the line. `timestamp` disagrees on
+**372 records** — worth noting that the ad-hoc check during B1 found only 9
+*lines* and concluded nesting was harmless, which is exactly how that bug shipped
+for an afternoon. Regex is safe only for `gitBranch` and `aiTitle`, which are the
+two fields there is no reason to optimise.
+
+**2. Skipping `try`/`catch`: NOT POSSIBLE.** It looked worth 267 ms on PS7. But
+`ConvertFrom-Json` throws a *terminating* `ArgumentException` on malformed JSON on
+both hosts, so `-ErrorAction SilentlyContinue` never gets a say. Dropping the
+catch would cost the whole session instead of the bad line. Verified; a fixture
+session now carries a malformed line mid-file.
+
+**3. Size-based hybrid (parse small lines, regex big ones): WORSE.** Parse cost is
+dominated by per-line overhead, not bytes — 6,582 small lines cost 755 ms while
+1,070 big ones cost 305 ms. The hybrid measured 959 ms on 5.1 (vs 1,131 parsing
+everything) and 1,012 ms on PS7 (vs 739) — a pessimisation on the host it was
+supposed to help.
+
+**4. Tail-reading: still rejected**, for the reasons in the original analysis
+below (an `aiTitle` can sit 30 KB from EOF; losing it degrades titles silently).
+
+**5. `-InputObject` instead of the pipeline: KEPT, but it is not a win.**
+Identical semantics, and 846 → 536 ms of isolated parse time on PS7. But 7
+interleaved runs per host put the end-to-end difference inside the noise (5.1
+−0.10 s, PS7 0.00 s). Kept only because it cannot be slower.
+
+**If performance does become a real problem, don't micro-optimise the parse.**
+At the current growth rate (~3 MB per heavy session) a year of history is a
+~10× store and ~15 s on 5.1, which would be painful. The right answer then is to
+stop doing a full scan at all: cache extracted metadata keyed on
+`(path, size, mtime)` and re-read only files whose key changed, making a listing
+O(changed files) instead of O(store). That is a real feature with its own
+invalidation risks — note that B1 established mtime is untrustworthy as a
+*recency* signal, though it remains fine as a *change* signal — but it is the only
+approach with an order-of-magnitude payoff. Filed here as P1's successor rather
+than as a variant of it.
+
+---
+
+### Original P1 analysis (kept for context)
+
 ### P1 — PowerShell's per-line `ConvertFrom-Json` is the whole problem; Python is already fast
 
 **Corrected.** An earlier version of this entry quoted a single cost of 1.72 s
@@ -530,8 +613,10 @@ Dependency-ordered, not value-ordered. Each group is one coherent review.
 4. ~~**B2** (branch semantics) → **E3** (show branch; relative times rejected).~~
    **Done 2026-07-30.**
 5. ~~**E2** (`--tail`).~~ **Done 2026-07-30.**
-6. **P1** (PowerShell regex extraction, corrected diagnosis) → then **E1** (deep
-   content search), after choosing E1's option 1 or 2. ← next, and the last step
+6. ~~**P1** (PowerShell regex extraction)~~ **Rejected 2026-07-30 on measured
+   safety and measured non-benefit** — see P1 below. → **E1** (deep content
+   search) is now the only remaining step, and needs a decision between its
+   option 1 and option 2 first. ← next
 
 Only **E1**, **P1**, **E6** and the smaller notes remain. Note that E2 has taken
 some pressure off E1: "find the session where we discussed X" is often really

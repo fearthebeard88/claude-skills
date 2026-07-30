@@ -153,9 +153,16 @@ def build_fixture(root):
 
     # 2. leafUuid-only last-prompt and no aiTitle -> title falls back to the
     #    last real user prose, and must be truncated at 80 chars.
+    #    Also carries a MALFORMED line and a blank one mid-file: both must be
+    #    skipped without losing the session or the records after them. Python
+    #    catches ValueError; PowerShell needs try/catch, because ConvertFrom-Json
+    #    throws a *terminating* ArgumentException that -ErrorAction cannot soften.
     long_prose = "deliberately long user prose " * 6
     write_session(root, enc, "bbbbbbbb-0000-0000-0000-000000000002", [
-        *pad(PROJ, 20, "2026-02-28T11:00:00.000Z"),
+        *pad(PROJ, 10, "2026-02-28T11:00:00.000Z"),
+        '{"type":"user",THIS IS NOT JSON',
+        "",
+        *pad(PROJ, 10, "2026-02-28T11:00:00.000Z"),
         rec(type="user", cwd=PROJ, timestamp="2026-02-28T12:00:00.000Z",
             message={"role": "user", "content": long_prose}),
         rec(type="last-prompt", leafUuid="dead-beef"),
@@ -689,6 +696,12 @@ def main():
             ("branch is last-wins, not first-wins", dircol("aaaaaaaa") == "proj@feature/x"),
             ("HEAD placeholder not shown as a branch", dircol("cccccccc") == "~"),
             ("no branch means no @ suffix", dircol("bbbbbbbb") == "proj"),
+            # Session 2 holds a malformed JSON line and a blank one partway
+            # through. Both must be skipped without costing the session or the
+            # records after them -- its title comes from prose written later.
+            ("malformed line skipped, session survives",
+             any(r.startswith("bbbbbbbb") for r in rows)
+             and dircol("bbbbbbbb") == "proj"),
             ("relocated session keeps its dir label", dircol("dddddddd") == "moved"),
             # HEAD must not be searchable either, or the query "head" matches
             # nearly every real session at score 1 and buries the real hits.

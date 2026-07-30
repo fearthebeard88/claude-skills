@@ -389,7 +389,20 @@ if (Test-Path $root) {
             try {
                 foreach ($line in [System.IO.File]::ReadLines($file.FullName)) {
                     if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                    try { $rec = $line | ConvertFrom-Json } catch { continue }
+                    # -InputObject, not the pipeline: identical semantics for a
+                    # single string, and measurably cheaper in isolation (846 ->
+                    # 536 ms of parse time over 7,663 lines on PowerShell 7,
+                    # neutral on 5.1). Honest caveat: that win does NOT show up
+                    # end to end -- 7 interleaved runs per host put the difference
+                    # inside the noise -- so this is kept only because it cannot
+                    # be slower, not because it made the skill faster.
+                    #
+                    # The try/catch cannot be swapped for the cheaper -ErrorAction
+                    # SilentlyContinue: ConvertFrom-Json throws a TERMINATING
+                    # ArgumentException on malformed JSON, verified on both hosts,
+                    # so the error action never gets a say. Losing this catch
+                    # would cost the whole session rather than the bad line.
+                    try { $rec = ConvertFrom-Json -InputObject $line } catch { continue }
                     $t = $rec.type
                     # Titles/prompts are re-emitted as the session grows — keep last.
                     if ($t -eq "ai-title" -and $rec.aiTitle) { $title = $rec.aiTitle }
