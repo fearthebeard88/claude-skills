@@ -73,6 +73,15 @@ Both scripts accept the same `<args>`, so the invocation is identical either way
   prompt text to tell them apart.
 - `--pick <id>` — **resume mode.** Instead of listing, print just the ready-to-run
   command for that session. Pass the **short id** from column 1. See Step 3.
+- `--deep` — also search **conversation text**, not just metadata. Requires
+  `--query`. Without it, a query only sees the title, the last-prompt preview, the
+  directory and the branch — so "find my session about X" fails whenever X came up
+  mid-conversation and the title doesn't mention it. Costs about +0.5s on a 19 MB
+  store (it reads every message), which is why it's opt-in. **A `--deep` search can
+  only ever return *more* sessions than the same query without it, never a
+  different order for the ones already found** — so retrying with `--deep` is
+  always safe. Reach for it when a plain `--query` comes back empty or clearly
+  misses, and say you did.
 - `--since <when>` / `--before <when>` — restrict to a time window by **last
   activity**. Each takes either a relative age — `12h`, `7d`, `2w` (no month
   unit; `m` would be ambiguous) — or an absolute local date `YYYY-MM-DD`. The
@@ -128,6 +137,13 @@ you're already in). Harmless no-op when run outside Claude Code.
 > between the scripts the *ranking* differs — which the contract forbids. "Same
 > order" therefore pins those four fields to exact agreement anyway. Only the
 > `dir` label and the `lastActive` format are genuinely free.
+>
+> **The search algorithm is specified in full** in a `SEARCH SPEC` comment block
+> at the top of `scan-sessions.py`, with a summary in `scan-sessions.ps1`. That
+> spec is the contract: tokenisation, case folding, match semantics, the three
+> scoring tiers and their weights, what counts as deep text, and the guarantee
+> that `--deep` never reorders what a shallow search found. Change it in both
+> scripts and in the spec, or not at all.
 >
 > **Run `python3 test-parity.py` after touching either script.** It builds a
 > fixture store, runs both against it via the env vars below, and diffs the rows.
@@ -269,10 +285,13 @@ exist beyond the page, say so and mention they can ask for the next page
 (`--offset 15`) or a larger count (`--limit`).
 
 If several titles look alike and you can't tell them apart, re-run with
-`--preview` and use the prompt text to disambiguate. If nothing matched, say so
-and offer to list recent sessions instead — and if you passed `--since`/
-`--before`, say which window you used, since an empty result is far more often a
-too-narrow window than a genuinely absent session.
+`--preview` and use the prompt text to disambiguate. **If a query matched nothing
+or looks like it missed, retry with `--deep` before concluding the session isn't
+there** — a plain query only sees titles and metadata, and the thing the user
+remembers was usually said mid-conversation. Only after `--deep` also comes back
+empty should you say there's no match, and offer to list recent sessions instead.
+If you passed `--since`/`--before`, say which window you used: an empty result is
+far more often a too-narrow window than a genuinely absent session.
 
 ## Step 3 — Resume
 

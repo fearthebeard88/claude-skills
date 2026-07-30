@@ -313,8 +313,13 @@ def build_fixture(root):
 
     write_session(root, enc, "55555555-0000-0000-0000-000000000017", [
         *pad(PROJ, 14, "2026-02-17T09:00:00.000Z"),
-        u("first question", "2026-02-17T10:00:00.000Z"),
-        a("first answer", "2026-02-17T10:01:00.000Z"),
+        # "sasquatch" appears ONLY in body text, never in a title, preview, cwd
+        # or branch, so it is unreachable without --deep. "waffle" sits in a
+        # different message of the same session, which is what makes the
+        # per-message rule (spec item 6) checkable: a query for the two words
+        # adjacent must NOT match, because no single message contains both.
+        u("first question about sasquatch", "2026-02-17T10:00:00.000Z"),
+        a("first answer mentioning waffle", "2026-02-17T10:01:00.000Z"),
         # Harness-injected, arrives as a user record; nobody typed it.
         u("[Request interrupted by user for tool use]", "2026-02-17T10:02:00.000Z"),
         u("second question", "2026-02-17T11:00:00.000Z"),
@@ -340,6 +345,34 @@ def build_fixture(root):
     #     160 code points of prose exercises the 80-char title cut and the
     #     140-char preview cut; a 1400-code-point reply exercises --tail's 1200.
     #     No aiTitle and no last-prompt, so the title falls through to the prose.
+    # 19+20. Purpose-built to pin the DEEP SCORE WEIGHT (spec item 4: a deep hit is
+    #        worth 1, the same as a metadata hit). Without these two, changing the
+    #        weight to 2 in one script only produced zero test failures -- the exact
+    #        cross-script drift E1's spec is supposed to prevent.
+    #
+    #        Query "zeppelin quokka" against them:
+    #          S1: both tokens in its preview      -> 1 + 1 = 2
+    #          S2: "zeppelin" in preview (1), "quokka" only in its body (deep)
+    #                                              -> 1 + 1 = 2  if deep scores 1
+    #                                              -> 1 + 2 = 3  if deep scores 2
+    #        S1 is the more recently active, so at equal scores it sorts first. If a
+    #        deep hit were ever worth more than a metadata hit, S2 would overtake it
+    #        and the asserted order flips. Both tokens are nonsense words that appear
+    #        nowhere else in the fixture, and both titles come from aiTitle so the
+    #        tokens land in tier 2 (preview) rather than tier 1 (title).
+    write_session(root, enc, "7a7a7a7a-0000-0000-0000-000000000019", [
+        *pad(PROJ, 14, "2026-02-14T12:00:00.000Z"),
+        rec(type="ai-title", aiTitle="Scoring tier fixture one"),
+        rec(type="last-prompt", lastPrompt="zeppelin quokka"),
+    ], 1_699_999_996)
+    write_session(root, enc, "7b7b7b7b-0000-0000-0000-000000000020", [
+        *pad(PROJ, 14, "2026-02-13T11:00:00.000Z"),
+        rec(type="user", cwd=PROJ, timestamp="2026-02-13T12:00:00.000Z",
+            message={"role": "user", "content": "a body mentioning quokka only"}),
+        rec(type="ai-title", aiTitle="Scoring tier fixture two"),
+        rec(type="last-prompt", lastPrompt="zeppelin"),
+    ], 1_699_999_995)
+
     EM = "\U0001F600"
     prose = EM * 100 + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwx"
     answer = EM * 700 + "Z" * 700
@@ -465,6 +498,24 @@ CASES = [
     ("tail by row", ["--pick", "1", "--tail", "1"], "strict"),
     ("tail with a window", ["--since", "2w", "--pick", "1", "--tail", "1"], "strict"),
     ("tail without pick", ["--tail", "2"], "rejected"),
+    # --deep
+    ("deep hit in body", ["--query", "sasquatch", "--deep"], "strict"),
+    ("deep miss stays empty", ["--query", "zzzznomatch", "--deep"], "strict"),
+    ("deep multi-term", ["--query", "sasquatch waffle", "--deep"], "strict"),
+    ("deep with window", ["--since", "2w", "--query", "sasquatch", "--deep"], "strict"),
+    ("deep respects stub filter", ["--query", "sasquatch", "--deep",
+                                   "--min-size-kb", "0"], "strict"),
+    ("deep does not affect pick", ["--query", "sasquatch", "--deep",
+                                  "--pick", "dddddddd"], "strict"),
+    ("deep without query", ["--deep"], "rejected"),
+    # Spec item 1: tokens split on an EXPLICIT class, not Python's str.split() or
+    # .NET's \s -- those disagree about U+001C..U+001F, which Python treats as
+    # whitespace and .NET does not. With the explicit class this is ONE token that
+    # matches nothing; under str.split() Python would see two tokens that both
+    # match, and diverge from PowerShell. Without this case the tokenizer rule is
+    # unverified: swapping it back for str.split() otherwise breaks no test.
+    ("exotic whitespace is not a token separator",
+     ["--query", "zeppelin\x1cquokka", "--deep", "--limit", "1000"], "strict"),
     ("tail negative", ["--pick", "55555555", "--tail", "-1"], "rejected"),
     ("tail non-numeric", ["--pick", "55555555", "--tail", "x"], "rejected"),
     # Argument validation: both must reject these, and accept nothing here.
@@ -730,6 +781,7 @@ def main():
              order == ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee",
                        "ffffffff", "77777777", "88888888", "ab111111", "ab211111",
                        "44444444", "55555555", "66666666",
+                       "7a7a7a7a", "7b7b7b7b",
                        "11111111", "22222222", "33333333"]),
             # 44444444 uses padded JSON; it must sort by its timestamp
             # (2026-02-18) among the timestamped sessions, not fall to the mtime
@@ -809,13 +861,14 @@ def main():
             ("--since 5d includes the boundary", ids(["--since", "5d"]) ==
              ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee", "ffffffff"]),
             ("--since 36h", ids(["--since", "36h"]) == ["aaaaaaaa"]),
-            ("--since 2w keeps every timestamped session",
+            ("--since 2w keeps the sessions inside the window",
              ids(["--since", "2w"]) ==
              ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee", "ffffffff",
               "77777777", "88888888", "ab111111", "ab211111", "44444444", "55555555",
               "66666666"]),
             ("--before 7d excludes the boundary", ids(["--before", "7d"]) ==
              ["88888888", "ab111111", "ab211111", "44444444", "55555555", "66666666",
+              "7a7a7a7a", "7b7b7b7b",
               "11111111", "22222222", "33333333"]),
             ("--since with --before", ids(["--since", "9d", "--before", "4d"]) ==
              ["eeeeeeee", "ffffffff", "77777777", "88888888", "ab111111"]),
@@ -897,6 +950,58 @@ def main():
             ("no broken surrogate pairs in truncated output",
              all(not (0xD800 <= ord(c) <= 0xDFFF)
                  for c in astral_title + astral_prev + "".join(tail_lines))),
+        ]
+
+        # E1: --deep. Session 17 is the only one whose BODY says "sasquatch";
+        # nothing has it in a title, preview, cwd or branch.
+        checks += [
+            ("shallow search cannot see body text",
+             ids(["--query", "sasquatch", "--limit", "1000"]) == []),
+            ("--deep finds it", ids(["--query", "sasquatch", "--deep",
+                                     "--limit", "1000"]) == ["55555555"]),
+            # Tokens are matched independently and may land in DIFFERENT messages
+            # of the same session; the session still matches, scoring 1 per token.
+            #
+            # (This is deliberately NOT claiming to test spec item 6. Per-message
+            # matching is behaviourally identical to matching a space-joined
+            # concatenation, because no token can contain whitespace and so no
+            # token can span the join. Item 6 is an implementation choice about
+            # memory and truncation, not an observable rule -- an earlier version
+            # of this check asserted otherwise and passed for the wrong reason.)
+            ("deep tokens may match in different messages",
+             ids(["--query", "waffle", "--deep", "--limit", "1000"]) == ["55555555"]
+             and ids(["--query", "sasquatch waffle", "--deep",
+                      "--limit", "1000"]) == ["55555555"]),
+            # Spec item 7: --deep can add rows but never reorders the ones a
+            # shallow search already found.
+            ("--deep preserves shallow order as a subsequence",
+             [r for r in ids(["--query", "session", "--deep", "--limit", "1000"])
+              if r in ids(["--query", "session", "--limit", "1000"])]
+             == ids(["--query", "session", "--limit", "1000"])),
+            ("--deep only ever adds rows",
+             set(ids(["--query", "session", "--limit", "1000"]))
+             <= set(ids(["--query", "session", "--deep", "--limit", "1000"]))),
+            # Spec item 5: deep text is exactly what --tail shows, so the injected
+            # notice and the tool_result body must be unsearchable too.
+            ("deep does not search injected notices",
+             ids(["--query", "interrupted", "--deep", "--limit", "1000"]) == []),
+            ("deep does not search tool results",
+             ids(["--query", "exit", "--deep", "--limit", "1000"]) == []),
+            # Case folding applies to body text as well as metadata.
+            # Spec item 4: a deep hit is worth 1, the SAME as a metadata hit.
+            # S1 scores 2 from two preview hits; S2 scores 1 from preview + 1 from
+            # a deep hit. Equal scores, so the more recently active (S1) leads. If
+            # a deep hit were worth 2, S2 would score 3 and overtake it.
+            ("deep hit scores the same as a metadata hit",
+             ids(["--query", "zeppelin quokka", "--deep", "--limit", "1000"])
+             == ["7a7a7a7a", "7b7b7b7b"]),
+            ("without --deep the same query drops to metadata only",
+             ids(["--query", "zeppelin quokka", "--limit", "1000"])
+             == ["7a7a7a7a", "7b7b7b7b"]),
+            ("U+001C does not split a token",
+             ids(["--query", "zeppelin\x1cquokka", "--deep", "--limit", "1000"]) == []),
+            ("deep is case-insensitive",
+             ids(["--query", "SASQUATCH", "--deep", "--limit", "1000"]) == ["55555555"]),
         ]
 
         # E4: --copy must not alter the command it copies.

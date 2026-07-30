@@ -110,10 +110,55 @@ ap.add_argument("--before", default="")
 # leaving the current one. default=None so `--tail 0` is distinguishable from
 # not passing it at all.
 ap.add_argument("--tail", type=nonneg_int, default=None)
+# Deep search: also match against conversation text, not just metadata. Opt-in
+# because it reads every message of every session.
+ap.add_argument("--deep", action="store_true")
 args = ap.parse_args()
 
 if args.tail is not None and not args.pick.strip():
     ap.error("--tail needs --pick <id> to say which session to read")
+if args.deep and not args.query.strip():
+    ap.error("--deep needs --query <terms> to search for")
+
+# --- SEARCH SPEC --------------------------------------------------------------
+# Written out because scan-sessions.ps1 has to reproduce it exactly, and "same
+# rows, same order" makes any drift here a contract break, not a nuance.
+#
+# 1. TOKENS. The query is lowercased, then split on runs of [ \t\r\n\f\v] and
+#    empty tokens dropped. An explicit class, NOT Python's str.split() or .NET's
+#    \s: those disagree on exotic whitespace (U+001C-001F are whitespace to
+#    Python, not to .NET \s), which would tokenize a query differently per host.
+# 2. FOLDING. Everything is compared lowercase, via str.lower() /
+#    ToLowerInvariant(). Never ToLower(), which is culture-sensitive.
+# 3. MATCHING. Ordinal substring containment. `in` and String.Contains are both
+#    ordinal, so they agree.
+# 4. SCORE, per token, first match wins — a token is counted once:
+#       in the title                                -> 3
+#       else in "preview cwd branch"                -> 1
+#       else (--deep only) in any message's text    -> 1
+#    A session with a total score of 0 is not a result.
+# 5. DEEP TEXT is exactly the text `--tail` would show: user and assistant
+#    records, text blocks only, minus sidechains, meta records, injected wrappers
+#    and harness notices. Same transcript_text() both paths use — reusing it is
+#    deliberate, so `--deep` and `--tail` can never disagree about what a session
+#    "contains", and no new extraction surface is introduced.
+# 6. DEEP MATCHING IS PER MESSAGE rather than against a concatenation. This is an
+#    IMPLEMENTATION choice, not an observable rule: because no token can contain
+#    whitespace (see 1), no token can span a space-joined boundary, so the two
+#    approaches give identical results. It's done per message to avoid the two bad
+#    alternatives — capping the haystack, which makes a term late in a long
+#    message silently stop matching, or building a multi-megabyte string per
+#    session. Tokens are independent, so different tokens may match in different
+#    messages of the same session.
+# 7. --deep NEVER CHANGES AN EXISTING SCORE. Tier 3 is only reached when tiers 1
+#    and 2 both miss, so --deep can add sessions to the results but cannot
+#    reorder the ones a shallow search already found.
+# 8. TIES break on activeMs descending, then sortKey ascending, as everywhere.
+TERM_SPLIT_RE = re.compile(r"[ \t\r\n\f\v]+")
+QUERY = args.query.strip().lower()
+TERMS = [t for t in TERM_SPLIT_RE.split(QUERY) if t]
+# Only worth collecting deep hits if there's something to look for.
+WANT_DEEP = args.deep and bool(TERMS)
 
 # Per-message cap. Generous, because asking for N messages is opting in to the
 # cost, but bounded so one long tool-shaped answer can't dominate the output.
@@ -386,6 +431,7 @@ if root.is_dir():
             # exactly one file reaches here — no reason to hold transcripts for
             # every session in the store.
             msgs = [] if args.tail is not None else None
+            deep_hits = set()
             try:
                 text = f.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -411,10 +457,20 @@ if root.is_dir():
                 # can never match a query.
                 if t == "last-prompt" and rec.get("lastPrompt"):
                     prompt = rec["lastPrompt"]
-                if msgs is not None and t in ("user", "assistant"):
+                if (msgs is not None or WANT_DEEP) and t in ("user", "assistant"):
                     tt = transcript_text(rec)
                     if tt:
-                        msgs.append((t, tt))
+                        if msgs is not None:
+                            msgs.append((t, tt))
+                        # Score as we go and keep only which TOKENS were seen, not
+                        # the text: holding every session's transcript to search it
+                        # afterwards would mean carrying the whole store in memory.
+                        # Stops looking once every token is accounted for.
+                        if WANT_DEEP and len(deep_hits) < len(TERMS):
+                            low = tt.lower()
+                            for term in TERMS:
+                                if term not in deep_hits and term in low:
+                                    deep_hits.add(term)
                 if t == "user":
                     ut = user_text(rec)
                     if ut:
@@ -510,6 +566,7 @@ if root.is_dir():
                 # no longer the file's mtime.
                 "activeMs": active_ms,
                 "msgs": msgs,
+                "deepHits": deep_hits,
                 "sizeKB": round(st.st_size / 1024, 1),
             })
 
@@ -602,18 +659,21 @@ if BEFORE_MS is not None:
     sessions = [s for s in sessions if s["activeMs"] < BEFORE_MS]
 
 # --- filter + rank -----------------------------------------------------------
-q = args.query.strip().lower()
-if q:
-    terms = q.split()
+if TERMS:
     scored = []
     for s in sessions:
-        hay = f"{s['title']} {s['preview']} {s['cwd']} {s['branch']}".lower()
+        # Note `preview cwd branch` without the title: the title is tier 1 and is
+        # checked separately, so including it here would be dead weight.
+        hay = f"{s['preview']} {s['cwd']} {s['branch']}".lower()
         title_lc = s["title"].lower()
         score = 0
-        for term in terms:
+        for term in TERMS:
+            # First match wins, so a token counts once — see the SEARCH SPEC.
             if term in title_lc:
                 score += 3
             elif term in hay:
+                score += 1
+            elif term in s["deepHits"]:
                 score += 1
         if score > 0:
             scored.append((score, s))

@@ -107,6 +107,9 @@ $Before = ""
 # leaving the current one. $null (not 0) when absent, so `--tail 0` is
 # distinguishable from not passing it at all.
 $Tail = $null
+# Deep search: also match against conversation text, not just metadata. Opt-in
+# because it reads every message of every session.
+$Deep = $false
 # Comparisons are case-SENSITIVE (-ceq / -ccontains) because argparse is: to
 # Python, "--LIMIT" is an unknown argument, and the two must agree on that.
 $ValueFlags = @("--query", "--limit", "--min-size-kb", "--pick", "--offset",
@@ -118,6 +121,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         $ShowPreview = $true
     } elseif ($a -ceq "--copy") {
         $CopyCmd = $true
+    } elseif ($a -ceq "--deep") {
+        $Deep = $true
     } elseif ($ValueFlags -ccontains $a) {
         if ($i + 1 -ge $args.Count) { ArgError "argument $a`: expected one argument" }
         $v = [string]$args[++$i]
@@ -143,6 +148,31 @@ if ($Unknown.Count -gt 0) { ArgError "unrecognized arguments: $($Unknown -join '
 if ($null -ne $Tail -and -not $Pick.Trim()) {
     ArgError "--tail needs --pick <id> to say which session to read"
 }
+if ($Deep -and -not $Query.Trim()) {
+    ArgError "--deep needs --query <terms> to search for"
+}
+
+# --- SEARCH SPEC --------------------------------------------------------------
+# The authoritative copy of this spec is in scan-sessions.py. Summary, because
+# "same rows, same order" makes any drift here a contract break:
+#
+# 1. TOKENS: query lowercased, split on runs of [ \t\r\n\f\v], empties dropped.
+#    An explicit class, NOT .NET's \s -- \s and Python's str.split() disagree on
+#    exotic whitespace, which would tokenize a query differently per host.
+# 2. FOLDING: ToLowerInvariant everywhere, never ToLower (culture-sensitive).
+# 3. MATCHING: ordinal substring, via String.Contains.
+# 4. SCORE per token, first match wins: title -> 3; else "preview cwd branch"
+#    -> 1; else (--deep only) any single message's text -> 1. Score 0 = no result.
+# 5. DEEP TEXT is exactly what --tail would show, via the same TranscriptText.
+# 6. DEEP MATCHING IS PER MESSAGE rather than against a concatenation -- an
+#    implementation choice (memory, no truncation), not an observable rule, since
+#    no token can contain whitespace and so none can span a space-joined boundary.
+# 7. --deep never changes an existing score; it can only add sessions.
+# 8. Ties: activeMs descending, then sortKey ascending.
+$TermSplitRe = '[ \t\r\n\f\v]+'
+$QueryLc = $Query.Trim().ToLowerInvariant()
+$Terms = @($QueryLc -split $TermSplitRe | Where-Object { $_ })
+$WantDeep = $Deep -and $Terms.Count -gt 0
 
 $root = $env:FIND_SESSION_ROOT
 if (-not $root) { $root = Join-Path (Join-Path $HOME ".claude") "projects" }
@@ -377,6 +407,7 @@ if (Test-Path $root) {
             # every session in the store.
             $msgs = $null
             if ($null -ne $Tail) { $msgs = [System.Collections.ArrayList]::new() }
+            $deepHits = [System.Collections.Generic.HashSet[string]]::new()
             # ReadLines throws on a file held without sharing by another process,
             # a permission-denied file, or an unhydrated OneDrive placeholder.
             # With $ErrorActionPreference = Stop that terminated the entire scan
@@ -413,9 +444,24 @@ if (Test-Path $root) {
                     # fallback — otherwise those sessions list as "(untitled)"
                     # with an empty preview and can never match a query.
                     if ($t -eq "last-prompt" -and $rec.lastPrompt) { $prompt = $rec.lastPrompt }
-                    if ($null -ne $msgs -and ($t -eq "user" -or $t -eq "assistant")) {
+                    if (($null -ne $msgs -or $WantDeep) -and ($t -eq "user" -or $t -eq "assistant")) {
                         $tt = TranscriptText $rec
-                        if ($tt) { [void]$msgs.Add(@($t, $tt)) }
+                        if ($tt) {
+                            if ($null -ne $msgs) { [void]$msgs.Add(@($t, $tt)) }
+                            # Score as we go and keep only which TOKENS were seen,
+                            # not the text: holding every session's transcript to
+                            # search it afterwards would mean carrying the whole
+                            # store in memory. Stops once every token is accounted
+                            # for.
+                            if ($WantDeep -and $deepHits.Count -lt $Terms.Count) {
+                                $low = $tt.ToLowerInvariant()
+                                foreach ($term in $Terms) {
+                                    if (-not $deepHits.Contains($term) -and $low.Contains($term)) {
+                                        [void]$deepHits.Add($term)
+                                    }
+                                }
+                            }
+                        }
                     }
                     if ($t -eq "user") {
                         $ut = UserText $rec
@@ -545,6 +591,7 @@ if (Test-Path $root) {
                 # no longer the file's mtime.
                 activeMs   = $activeMs
                 msgs       = $msgs
+                deepHits   = $deepHits
                 sizeKB     = [math]::Round($file.Length / 1KB, 1)
             })
         }
@@ -693,21 +740,25 @@ if ($null -ne $BeforeMs) {
 }
 
 # --- filter + rank -----------------------------------------------------------
-# ToLowerInvariant, never ToLower: .NET's ToLower() uses the CURRENT CULTURE,
-# and Python's str.lower() is locale-independent. Under tr-TR (or az-AZ)
-# "INVOICE".ToLower() is "ınvoıce" with a dotless i, so `--query invoice` matched
-# in Python and returned nothing at all in PowerShell. Verified end to end: 1 row
-# vs 0 on both PowerShell hosts under tr-TR.
-$q = $Query.Trim().ToLowerInvariant()
-if ($q) {
-    $terms = $q -split '\s+' | Where-Object { $_ }
+# Tokens and folding are settled above by the SEARCH SPEC; ToLowerInvariant is
+# used throughout because .NET's ToLower() follows the CURRENT CULTURE while
+# Python's str.lower() does not. Under tr-TR (or az-AZ) "INVOICE".ToLower() is
+# "ınvoıce" with a dotless i, so `--query invoice` matched in Python and returned
+# nothing at all in PowerShell. Verified: 1 row vs 0 on both hosts under tr-TR.
+if ($Terms.Count -gt 0) {
     $scored = foreach ($s in $sessions) {
-        $hay = "$($s.title) $($s.preview) $($s.cwd) $($s.branch)".ToLowerInvariant()
+        # Note "preview cwd branch" without the title: the title is tier 1 and is
+        # checked separately, so including it here would be dead weight. Safe
+        # because a token can never span the joining space -- tokens are split on
+        # whitespace, so no token contains any.
+        $hay = "$($s.preview) $($s.cwd) $($s.branch)".ToLowerInvariant()
         $titleLc = $s.title.ToLowerInvariant()
         $score = 0
-        foreach ($term in $terms) {
+        foreach ($term in $Terms) {
+            # First match wins, so a token counts once -- see the SEARCH SPEC.
             if ($titleLc.Contains($term)) { $score += 3 }
             elseif ($hay.Contains($term)) { $score += 1 }
+            elseif ($s.deepHits.Contains($term)) { $score += 1 }
         }
         if ($score -gt 0) { $s | Add-Member -NotePropertyName score -NotePropertyValue $score -PassThru }
     }

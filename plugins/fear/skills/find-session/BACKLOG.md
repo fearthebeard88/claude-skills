@@ -39,29 +39,31 @@ transitively pins all four fields to exact agreement anyway. What the relaxation
 genuinely frees is the output plumbing (`sys.stdout.buffer` / `[Console]::Out`
 lock-step) and the two display-only columns.
 
-Consequences already reflected below: P1 can take a PowerShell-only regex fast
-path without mirroring it in Python, so long as the values it extracts are
-identical. The `dirlabel` root-case divergence drops from parity break to
-cosmetic. **E1 is the item this was relaxed for, and it's the one it helps
-least** — see the note under E1.
+The `dirlabel` root-case divergence drops from parity break to cosmetic.
 
-Follow-up: `SKILL.md` states the byte-identical contract in several places
-(the sync callout, the Step 1 output description, the `--pick` notes). It has to
-be rewritten to the new contract, or the docs and the code disagree.
+**In hindsight the relaxation bought almost nothing.** It was requested for E1,
+which turned out not to need it — E1 shipped by *specifying* the algorithm
+(option 1), and the relaxation only ever freed output plumbing and two
+display-only columns. It also didn't license the P1 regex fast path it was
+supposed to, because that was rejected on correctness rather than on parity. Worth
+remembering next time a contract looks like the obstacle: here the contract was
+never the thing in the way.
 
-**Done — sequencing steps 1-6 (2026-07-30):** B6, P0, numeric-arg validation, B3,
-B4, E4, B1, E5, B2, E3 and E2 shipped, all covered by `test-parity.py` and
-mutation-tested. **P1 rejected on measured evidence** (see P1). Only **E1** and
-**E6** remain, plus the smaller notes.
+`SKILL.md` has been rewritten to this contract (done).
 
-Two items were closed by *rejection* rather than implementation — E3's relative
-times and all of P1. Both rejections are recorded with the measurements that drove
-them, so they don't get re-opened on intuition. `SKILL.md` is rewritten to the relaxed contract. Details in
-"Already fixed" below; the items are struck from the lists. Six extra divergences
-surfaced while testing and were fixed in the same passes — see the entries under
-"Already fixed". Four of them would not have been found by reading the code, and
-one (nested timestamps) was found only by diffing against the **real** store
-after the fixture had already gone green.
+**Done — all six sequencing steps (2026-07-30).** Shipped: B6, P0, numeric-arg
+validation, B3, B4, E4, B1, E5, B2, E3 (branch half) and E2, E1. Rejected on
+measured evidence: E3's relative times, and all of P1. Everything shipped is
+covered by `test-parity.py` and mutation-tested. `SKILL.md` is rewritten to the
+relaxed contract. **Only E6 and the smaller notes remain.**
+
+Eight further divergences surfaced while testing and were fixed in the same
+passes — see the entries under "Already fixed". Most would not have been found by
+reading the code. Three were found only *after* the suite had gone green: nested
+timestamps (caught by diffing against the real store), the UTF-16 truncation
+mismatch (caught while scoping E1), and the deep score weight (caught by
+mutation). The recurring lesson is that the suite tests what someone thought to
+model, so a green run is evidence about the fixture, not about the code.
 
 **Already fixed, not in this backlog:**
 
@@ -470,6 +472,43 @@ designed together.
 
 ## Enhancements, roughly by value
 
+### ~~E1~~ — done 2026-07-30 via option 1 (spec it tightly). Original entry below.
+
+Shipped as `--deep`, requiring `--query`. The algorithm is written out as a
+`SEARCH SPEC` block at the top of `scan-sessions.py` (summarised in the `.ps1`),
+covering tokenisation, folding, match semantics, the three scoring tiers, what
+counts as deep text, and the ordering guarantee. Decisions that made it tractable:
+
+- **Reuse `transcript_text()`.** Deep text is *exactly* what `--tail` shows, so E1
+  introduced no new extraction surface -- the hardest part of the parity problem
+  was avoided rather than solved. It also gives a useful property: if `--deep`
+  matched a session, `--tail` can show you the text that matched.
+- **Deep is a third tier worth 1, reached only when title and metadata both miss.**
+  So `--deep` can add sessions but cannot reorder those a shallow search already
+  found; retrying with `--deep` is always safe. Verified on the real store:
+  `--query claude` gives 21 rows, `--deep` gives 32, and the 21 keep their relative
+  order.
+- **Score during the scan, keep only which tokens hit.** Retaining every session's
+  transcript to search afterwards would mean holding the whole store in memory.
+- **Explicit `[ 	
+]+` tokeniser**, because Python's `str.split()` and
+  .NET's `\s` disagree about U+001C-U+001F.
+- Cost: +0.04 s on Python, +0.53 s on 5.1, +0.56 s on pwsh. Opt-in, as designed.
+
+Shallow search is byte-identical to the previous version across 10 queries, which
+also confirms dropping the title from the tier-2 haystack was the no-op it looks
+like (a token can never span the joining space, since tokens are split on
+whitespace).
+
+**Two mutations initially escaped the suite, and both are worth remembering:**
+changing the deep score weight from 1 to 2 *in Python only* broke nothing, and
+swapping the tokeniser for `str.split()` broke nothing. Both were invisible because
+no fixture exercised them -- the weight needed two sessions that tie only when a
+deep hit is worth exactly 1, and the tokeniser needed a query containing U+001C.
+Both fixtures now exist and both mutations now fail. This is the third time here
+that a green suite was hiding a real gap; the pattern is always the same, that the
+suite tests what someone thought to model.
+
 ### E1 — search conversation content, not just metadata
 
 **The biggest functional gap.** `--query` scores against `title + preview + cwd
@@ -613,10 +652,12 @@ Dependency-ordered, not value-ordered. Each group is one coherent review.
 4. ~~**B2** (branch semantics) → **E3** (show branch; relative times rejected).~~
    **Done 2026-07-30.**
 5. ~~**E2** (`--tail`).~~ **Done 2026-07-30.**
-6. ~~**P1** (PowerShell regex extraction)~~ **Rejected 2026-07-30 on measured
-   safety and measured non-benefit** — see P1 below. → **E1** (deep content
-   search) is now the only remaining step, and needs a decision between its
-   option 1 and option 2 first. ← next
+6. ~~**P1** (PowerShell regex extraction) — rejected on measured evidence.
+   **E1** (deep content search) — shipped via option 1.~~ **Done 2026-07-30.**
+
+**The sequenced work is complete.** What remains is E6 (near-duplicate grouping,
+explicitly low-confidence) and the smaller notes, plus P1's successor if listing
+performance ever becomes a real problem.
 
 Only **E1**, **P1**, **E6** and the smaller notes remain. Note that E2 has taken
 some pressure off E1: "find the session where we discussed X" is often really
