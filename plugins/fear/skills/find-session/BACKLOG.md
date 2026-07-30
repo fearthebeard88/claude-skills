@@ -169,6 +169,28 @@ after the fixture had already gone green.
   `$null`/`is not None` rather than a truthiness test, so moving *out* of a repo
   (recorded as an empty branch) genuinely clears it while the many records that
   simply omit the key don't.
+- **Culture-sensitive case folding (found 2026-07-30 while scoping E1).** All
+  three PowerShell `.ToLower()` calls in the search path followed the *current
+  culture*, while Python's `str.lower()` is locale-independent. Under `tr-TR` or
+  `az-AZ`, `"INVOICE".ToLower()` is `ınvoıce` with a dotless i, so `--query
+  invoice` returned **1 row in Python and 0 in PowerShell** — measured end to end
+  on both hosts before the fix. Now `ToLowerInvariant()`, and the home-dir
+  comparison uses an explicit `OrdinalIgnoreCase` instead of `-eq` for the same
+  reason. `String.Contains` was checked and is already ordinal. Pinned by a test
+  that runs the scanner under en-US, tr-TR and az-AZ; reverting fails exactly the
+  latter two.
+- **Truncation counted UTF-16 code units, not code points (same session).**
+  Python's `len()`/slicing count code points; .NET's `.Length`/`Substring()` count
+  code units, so an astral character is 1 to Python and 2 to .NET. Measured: a
+  50-emoji title truncated at 80 kept **50 emoji in Python and 40 in PowerShell**.
+  That's a different title, therefore a different search score, therefore possibly
+  a different **order** — a breach of the contract, not a cosmetic difference.
+  `Substring` would also cut a surrogate pair in half and emit a lone half
+  character. PowerShell's `Truncate` now walks code points (with a
+  `.Length <= n` fast path, since code points never exceed code units). **7 files
+  in the real store contain non-BMP characters**, and the parity suite had been
+  green for days without a single astral fixture — the gap was found by reasoning
+  about E1's scoring, not by the tests.
 - **E2** — `--pick <id> --tail <N>` prints a session's last N exchanges in place,
   so "what did I decide about X?" no longer needs a terminal switch. Two decisions
   that came out of measuring rather than from the original write-up:
@@ -377,6 +399,13 @@ Suggested shape: a `--deep` flag that also scores message text, so the cheap pat
 stays cheap and the expensive path is opt-in. Pairs with P1 — cheap default
 listing, full read only under `--deep`.
 
+**Two of E1's supposed risks turned out to be live bugs, now fixed.** Scoping this
+item is what surfaced the culture-sensitive `ToLower()` and the UTF-16 truncation
+divergence (both under "Already fixed"). Neither was an E1 risk — both affected
+`--query` and the listing *today*. So the language-level primitives E1 needs are
+now sound, and what remains below is genuinely a specification problem rather than
+a pile of latent Unicode traps.
+
 **Parity is still the hard part, and relaxing the contract barely helps here.**
 The contract was relaxed to "same rows, same order" partly for this item (see
 Decision above) — but scoring divergence changes *which sessions match* and
@@ -386,10 +415,16 @@ plumbing, not scoring.
 
 So E1 still needs both scripts to tokenize, match, and score the same way. The
 surface: which record types and content blocks count as searchable text, how much
-of each message is scored (any truncation must match), dedup of repeated text,
-and the per-term weighting. Locale is the smaller risk — Python's `str.lower()`
-and .NET's `ToLower()` agree on ASCII, and .NET's `String.Contains(string)` is
-ordinal — so non-ASCII content is where they'd drift.
+of each message is scored (any truncation must match — and truncation is now
+code-point based on both sides, so that part is settled), dedup of repeated text,
+and the per-term weighting.
+
+One residual, untested divergence to keep in mind: **query tokenization.** Python's
+`str.split()` with no arguments splits on Unicode whitespace per `str.isspace()`,
+while PowerShell's `-split '\s+'` uses .NET's `\s`. These sets aren't identical —
+`U+001C`–`U+001F` are whitespace to Python but not to .NET `\s`. Vanishingly
+unlikely in a typed query, and not worth pre-emptively fixing, but if E1 widens
+the tokenizer it's worth pinning with a fixture rather than assuming.
 
 Two honest ways forward, worth picking deliberately before writing code:
 

@@ -160,7 +160,18 @@ you're already in). Harmless no-op when run outside Claude Code.
 > case-sensitive on both sides (`-ceq`/`-ccontains` in PowerShell). (7) Parse
 > numbers with `InvariantCulture` in PowerShell — `[double]::TryParse` otherwise
 > follows the current locale, so `--min-size-kb 3.5` would be rejected in a
-> comma-decimal locale while Python always accepts a dot. (8) **`scan-sessions.ps1`
+> comma-decimal locale while Python always accepts a dot. **Case-fold with
+> `ToLowerInvariant()`, never `ToLower()`** — .NET's `ToLower()` follows the
+> current culture, so under `tr-TR`/`az-AZ` `"INVOICE".ToLower()` is `ınvoıce`
+> with a dotless i and `--query invoice` matched in Python while returning nothing
+> in PowerShell. Same reason the home-dir comparison uses an explicit
+> `OrdinalIgnoreCase` rather than `-eq`. (`String.Contains` is already ordinal, so
+> it's safe.) (8) **Count and cut text by CODE POINTS, not `.Length`.** .NET
+> counts UTF-16 code units, so an emoji is 2 there and 1 to Python — a
+> `.Length`-based truncate cut a 50-emoji title to 40 emoji where Python kept 50,
+> producing a different title, a different search score, and potentially a
+> different *order*. `Substring` will also split a surrogate pair in half. 7 files
+> in the reference store contain non-BMP characters. (9) **`scan-sessions.ps1`
 > is saved as UTF-8 *with* a BOM, on purpose.** Windows PowerShell 5.1 reads a
 > BOM-less `.ps1` as ANSI, so a UTF-8 em-dash becomes `â€”` — and that trailing
 > `”` is U+201D RIGHT DOUBLE QUOTATION MARK, which PowerShell honours as a string

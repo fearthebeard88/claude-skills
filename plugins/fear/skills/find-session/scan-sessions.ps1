@@ -263,7 +263,34 @@ function Clean($s) {
 }
 
 function Truncate($s, $n) {
-    if ($s.Length -gt $n) { return $s.Substring(0, $n) + "..." }
+    # Counts and cuts by CODE POINTS, to match Python's len() and slicing.
+    #
+    # .NET's .Length and Substring() count UTF-16 CODE UNITS, so an astral
+    # character (emoji, some CJK extensions) is 2 to .NET and 1 to Python. Cutting
+    # by .Length trimmed a 50-emoji title to 40 emoji where Python kept all 50 --
+    # a different title, which then produced a different search score and could
+    # reorder the listing, breaking "same rows, same order" rather than just
+    # looking different. 7 files in the reference store contain non-BMP
+    # characters, so this is not hypothetical.
+    #
+    # Substring() would also happily cut *between* a surrogate pair, emitting a
+    # lone half of a character.
+    if ([string]::IsNullOrEmpty($s)) { return $s }
+    # Code points are never more numerous than code units, so this bounds the
+    # common case without walking the string at all.
+    if ($s.Length -le $n) { return $s }
+    $cp = 0   # code points consumed
+    $i = 0    # code unit index
+    while ($i -lt $s.Length) {
+        if ($cp -eq $n) { return $s.Substring(0, $i) + "..." }
+        if ([char]::IsHighSurrogate($s[$i]) -and ($i + 1) -lt $s.Length -and
+            [char]::IsLowSurrogate($s[$i + 1])) {
+            $i += 2
+        } else {
+            $i++
+        }
+        $cp++
+    }
     return $s
 }
 
@@ -653,12 +680,17 @@ if ($null -ne $BeforeMs) {
 }
 
 # --- filter + rank -----------------------------------------------------------
-$q = $Query.Trim().ToLower()
+# ToLowerInvariant, never ToLower: .NET's ToLower() uses the CURRENT CULTURE,
+# and Python's str.lower() is locale-independent. Under tr-TR (or az-AZ)
+# "INVOICE".ToLower() is "ınvoıce" with a dotless i, so `--query invoice` matched
+# in Python and returned nothing at all in PowerShell. Verified end to end: 1 row
+# vs 0 on both PowerShell hosts under tr-TR.
+$q = $Query.Trim().ToLowerInvariant()
 if ($q) {
     $terms = $q -split '\s+' | Where-Object { $_ }
     $scored = foreach ($s in $sessions) {
-        $hay = "$($s.title) $($s.preview) $($s.cwd) $($s.branch)".ToLower()
-        $titleLc = $s.title.ToLower()
+        $hay = "$($s.title) $($s.preview) $($s.cwd) $($s.branch)".ToLowerInvariant()
+        $titleLc = $s.title.ToLowerInvariant()
         $score = 0
         foreach ($term in $terms) {
             if ($titleLc.Contains($term)) { $score += 3 }
@@ -692,7 +724,15 @@ if ($PickByRow) {
 # paths, no JSON keys. title has whitespace collapsed already, so it can't
 # contain a tab/newline.
 $lines = foreach ($s in @($rankedArr | Select-Object -Skip $Offset -First $Limit)) {
-    $label = if ($s.cwd -eq $HomeDir) { "~" } else { (($s.cwd -replace '\\', '/').TrimEnd('/') -split '/')[-1] }
+    # OrdinalIgnoreCase explicitly, rather than `-eq`, so the home-dir match can't
+    # depend on the current culture. Windows records the same home dir with
+    # varying drive-letter case, and the path here contains an "i" -- exactly the
+    # letter Turkish case-folding treats differently.
+    $label = if ([string]::Equals($s.cwd, $HomeDir, [StringComparison]::OrdinalIgnoreCase)) {
+        "~"
+    } else {
+        (($s.cwd -replace '\\', '/').TrimEnd('/') -split '/')[-1]
+    }
     # `@branch` folded into the existing dir column rather than added as a new
     # one: only ~11% of sessions have a real branch, so a separate column would be
     # empty on nearly every row while costing width on all of them.

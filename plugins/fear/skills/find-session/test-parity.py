@@ -170,7 +170,11 @@ def build_fixture(root):
         rec(type="user", cwd=FAKE_HOME, gitBranch="HEAD",
             timestamp="2026-02-27T12:00:00.000Z",
             message={"role": "user", "content": "no repo here"}),
-        rec(type="ai-title", aiTitle="Session in the home directory"),
+        # "INVOICE" in caps on purpose: it's what culture_check() searches for.
+        # Under tr-TR, .ToLower() turns the I into a dotless "ı", so a lowercase
+        # query stops matching unless the scripts fold invariantly. Keeps the
+        # words "session" and "home" so the other query assertions still hold.
+        rec(type="ai-title", aiTitle="INVOICE PIPELINE session in the home directory"),
         rec(type="last-prompt", lastPrompt="what did we decide"),
     ], next(mt))
 
@@ -317,6 +321,30 @@ def build_fixture(root):
         a("third answer", "2026-02-17T12:02:00.000Z"),
         rec(type="ai-title", aiTitle="Session with three exchanges"),
     ], 1_699_999_998)
+
+    # 18. Astral (non-BMP) characters, crossing every truncation boundary at once.
+    #     Python's len()/slicing count CODE POINTS; .NET's .Length/Substring()
+    #     count UTF-16 CODE UNITS, so an emoji is 1 to Python and 2 to .NET. A
+    #     .Length-based truncate cut a 50-emoji title to 40 emoji where Python
+    #     kept 50 -- a different title, hence a different search score, hence a
+    #     possibly different ORDER. 7 files in the real store contain non-BMP
+    #     characters, and the parity suite went green for days without noticing.
+    #
+    #     160 code points of prose exercises the 80-char title cut and the
+    #     140-char preview cut; a 1400-code-point reply exercises --tail's 1200.
+    #     No aiTitle and no last-prompt, so the title falls through to the prose.
+    EM = "\U0001F600"
+    prose = EM * 100 + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwx"
+    answer = EM * 700 + "Z" * 700
+    assert len(prose) == 160 and len(answer) == 1400
+    write_session(root, enc, "66666666-0000-0000-0000-000000000018", [
+        *pad(PROJ, 14, "2026-02-16T11:00:00.000Z"),
+        rec(type="user", cwd=PROJ, timestamp="2026-02-16T11:30:00.000Z",
+            message={"role": "user", "content": prose}),
+        rec(type="assistant", cwd=PROJ, timestamp="2026-02-16T12:00:00.000Z",
+            message={"role": "assistant",
+                     "content": [{"type": "text", "text": answer}]}),
+    ], 1_699_999_997)
 
 
 def works(exe, probe):
@@ -501,14 +529,18 @@ class Unreadable:
 def unreadable_check(root, rts):
     """B6: one unreadable file must cost one row, not the whole listing."""
     target = root / "C--fixture-proj" / "aaaaaaaa-0000-0000-0000-000000000001.jsonl"
-    before, _, _ = run(rts[0][1], [], root)
+    # --limit 1000, not the default: the fixture has more sessions than the
+    # default page of 15, so a capped listing would hide the locked-out row
+    # behind the cap and the check would silently stop testing anything.
+    ALL = ["--limit", "1000"]
+    before, _, _ = run(rts[0][1], ALL, root)
     results = []
     with Unreadable(target) as lock:
         if not lock.active:
             print("skip  unreadable file tolerated (cannot revoke read access here)")
             return 0
         for name, cmd in rts:
-            rows, code, err = run(cmd, [], root)
+            rows, code, err = run(cmd, ALL, root)
             results.append((name, rows, code, err))
 
     failures = 0
@@ -532,6 +564,41 @@ def unreadable_check(root, rts):
     if len({tuple(r[1]) for r in results}) > 1:
         print("FAIL  unreadable file: runtimes disagree on the surviving rows")
         failures += 1
+    return failures
+
+
+def culture_check(root, rts):
+    """PowerShell's ToLower() follows the CURRENT CULTURE; Python's doesn't.
+
+    Under tr-TR (and az-AZ) "INVOICE".ToLower() is "ınvoıce" with a dotless i, so
+    `--query invoice` matched in Python and returned nothing at all in PowerShell.
+    Verified before the fix: 1 row vs 0 on both PowerShell hosts.
+
+    Needs its own invocation form — the culture has to be set inside the child
+    process, so this uses -Command rather than -File. Python needs no equivalent:
+    str.lower() is locale-independent by definition.
+    """
+    ps = [(n, c) for n, c in rts if n.startswith("ps:")]
+    py = [c for n, c in rts if n.startswith("py:")]
+    if not ps or not py:
+        print("skip  culture-invariant search (need both runtimes)")
+        return 0
+    args_ = ["--query", "invoice", "--limit", "1000"]
+    want, _, _ = run(py[0], args_, root)
+    failures = 0
+    for name, cmd in ps:
+        exe = cmd[0]
+        for culture in ("en-US", "tr-TR", "az-AZ"):
+            script = ("[System.Threading.Thread]::CurrentThread.CurrentCulture="
+                      "[System.Globalization.CultureInfo]::new('%s'); & '%s' %s"
+                      % (culture, PS1, " ".join(args_)))
+            got, code, _ = run([exe, "-NoProfile", "-Command", script], [], root)
+            ok = got == want and code == 0
+            print(("ok    " if ok else "FAIL  ")
+                  + "culture-invariant search [%s %s] (%d rows, want %d)"
+                  % (name, culture, len(got), len(want)))
+            if not ok:
+                failures += 1
     return failures
 
 
@@ -587,7 +654,9 @@ def main():
 
         # Fixture-specific assertions the two-runtime diff can't catch: both
         # agreeing on the WRONG answer would still pass above.
-        rows, _, _ = run(rts[0][1], [], root)
+        # Uncapped, for the same reason as in unreadable_check(): the default
+        # page is 15 rows and the fixture is larger than that.
+        rows, _, _ = run(rts[0][1], ["--limit", "1000"], root)
         checks = [
             ("sidechain excluded", all("SHOULD NEVER APPEAR" not in r for r in rows)),
             ("stub hidden by default", all(not r.startswith("99999999") for r in rows)),
@@ -647,7 +716,8 @@ def main():
             ("full order follows timestamps",
              order == ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee",
                        "ffffffff", "77777777", "88888888", "ab111111", "ab211111",
-                       "44444444", "55555555", "11111111", "22222222", "33333333"]),
+                       "44444444", "55555555", "66666666",
+                       "11111111", "22222222", "33333333"]),
             # 44444444 uses padded JSON; it must sort by its timestamp
             # (2026-02-18) among the timestamped sessions, not fall to the mtime
             # group at the end.
@@ -729,9 +799,10 @@ def main():
             ("--since 2w keeps every timestamped session",
              ids(["--since", "2w"]) ==
              ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee", "ffffffff",
-              "77777777", "88888888", "ab111111", "ab211111", "44444444", "55555555"]),
+              "77777777", "88888888", "ab111111", "ab211111", "44444444", "55555555",
+              "66666666"]),
             ("--before 7d excludes the boundary", ids(["--before", "7d"]) ==
-             ["88888888", "ab111111", "ab211111", "44444444", "55555555",
+             ["88888888", "ab111111", "ab211111", "44444444", "55555555", "66666666",
               "11111111", "22222222", "33333333"]),
             ("--since with --before", ids(["--since", "9d", "--before", "4d"]) ==
              ["eeeeeeee", "ffffffff", "77777777", "88888888", "ab111111"]),
@@ -790,6 +861,31 @@ def main():
                  "has no readable exchanges")),
         ]
 
+        # Truncation counts CODE POINTS, not UTF-16 code units. len() below is
+        # Python's, i.e. code points; the cross-runtime diff is what proves
+        # PowerShell agrees. Session 18's prose is 160 code points of mostly
+        # emoji, its reply 1400, so all three limits (80 title / 140 preview /
+        # 1200 tail) cut inside a run of astral characters.
+        ASTRAL = "66666666"
+        astral_row = [r for r in
+                      out(["--preview", "--limit", "1000"]) if r.startswith(ASTRAL)]
+        astral_title = astral_row[0].split("\t")[1] if astral_row else ""
+        astral_prev = astral_row[0].split("\t")[4] if astral_row else ""
+        tail_lines = out(["--pick", ASTRAL, "--tail", "1"])
+        checks += [
+            ("astral title cut at 80 code points",
+             len(astral_title) == 83 and astral_title.endswith("...")),
+            ("astral preview cut at 140 code points",
+             len(astral_prev) == 143 and astral_prev.endswith("...")),
+            ("astral reply cut at 1200 code points",
+             len(tail_lines) == 2
+             and len(tail_lines[1].split("\t")[1]) == 1203),
+            # A code-unit cut would land mid-surrogate and emit half a character.
+            ("no broken surrogate pairs in truncated output",
+             all(not (0xD800 <= ord(c) <= 0xDFFF)
+                 for c in astral_title + astral_prev + "".join(tail_lines))),
+        ]
+
         # E4: --copy must not alter the command it copies.
         copied, _, _ = run(rts[0][1], ["--pick", "dddddddd", "--copy"], root)
         checks.append(("--copy leaves the command unchanged",
@@ -800,6 +896,7 @@ def main():
                 failures += 1
 
         failures += unreadable_check(root, rts)
+        failures += culture_check(root, rts)
 
         print("\n%s (%d failure%s)" % ("PASS" if not failures else "FAIL",
                                        failures, "" if failures == 1 else "s"))
