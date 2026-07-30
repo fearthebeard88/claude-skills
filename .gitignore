@@ -12,3 +12,6 @@ __pycache__/
 .idea/
 *.swp
 *~
+
+# Local-only working notes
+plugins/fear/skills/find-session/BACKLOG.md
