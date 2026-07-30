@@ -82,6 +82,9 @@ Both scripts accept the same `<args>`, so the invocation is identical either way
   user gives a time reference ("last week", "back in June", "yesterday")
   instead of, or as well as, `--query`. `--pick <id>` ignores the window (an id
   is exact); `--pick <N>` respects it, because N indexes the filtered ranking.
+- `--tail <N>` — **read mode.** With `--pick`, print the last N *exchanges* of
+  that session instead of a resume command, so you can answer "what did I decide
+  about X?" without the user leaving this session. See Step 4.
 - `--copy` — also copy the resume command to the clipboard (`Set-Clipboard` /
   `pbcopy` / `wl-copy` / `xclip` / `clip`). Only meaningful with `--pick`; a
   no-op for a listing. Best-effort: the command is always printed too, and a
@@ -315,6 +318,10 @@ style for the platform the session ran on. In the agent-native path there's no
 `--pick`, so build the same two lines from the `cwd` you already assembled — and
 check that directory exists first, since nothing else will.
 
+**Before handing over a resume command, consider whether they wanted Step 4
+instead** — if the question is about what happened in that session rather than
+about continuing it, `--tail` answers it here with no terminal switch.
+
 **You cannot resume it for them from inside this session** — launching
 `claude --resume` via a tool call spawns a broken nested instance, not a
 terminal handoff. The same is true of the `!` prefix: it runs the command
@@ -323,6 +330,46 @@ fails with "No deferred tool marker found in the resumed session"). Do NOT
 recommend `!` for resuming. Tell the user to run the command in a **separate,
 fresh terminal** (or to exit this session first, then run it). Present the
 command in a copy-ready code block.
+
+## Step 4 — Read it here instead (often what they actually wanted)
+
+**"Resume" is frequently not the goal.** A large share of the real need is *"what
+did I decide about X in that session?"* — and that doesn't require a terminal
+switch at all. `--pick <id> --tail <N>` prints the last N exchanges right here:
+
+```
+& "<skill-dir>\scan-sessions.ps1" --pick e5faf172 --tail 4
+```
+
+Output is one message per line, `role⇥text`, oldest first:
+
+```
+user⇥what should we do about the retry logic
+assistant⇥Use exponential backoff capped at 30s, and don't retry 4xx.
+```
+
+**When the user asks a question about a past session rather than asking to
+continue it, reach for this first** and only offer the resume command if they
+need to actually keep working there. It's also the *only* option when the
+session's directory is gone — `--tail` reads fine where `--pick` alone refuses.
+
+Details worth knowing:
+
+- `N` counts **exchanges**, not messages: one thing the user asked plus the final
+  reply to it. So `--tail 3` is "the last 3 things I asked". Each exchange prints
+  at most two lines, so output stays predictable.
+- Only the **last** reply in an exchange is shown. Claude's earlier messages in a
+  turn are mostly tool-call narration; the last one carries the conclusion. If the
+  answer looks truncated mid-reasoning, ask for more exchanges, not more depth —
+  depth isn't available.
+- Whitespace is collapsed, so **code blocks lose their line breaks**. This
+  recovers decisions and prose, not files. If the user needs code back verbatim,
+  they'll have to resume.
+- Long messages are cut at ~1200 characters with an ellipsis.
+- Injected plumbing (`[Request interrupted by user…]`, system reminders, slash
+  command wrappers) and tool results are excluded — this shows what was actually
+  said.
+- A session with no user turn at all reports `no readable exchanges`.
 
 ## Notes
 

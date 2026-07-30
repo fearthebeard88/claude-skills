@@ -11,6 +11,7 @@ and the same rows in the same order, so the two stay interchangeable.
     scan-sessions.py --pick e5faf172      # resume command for that session id
     scan-sessions.py --since 7d           # active in the last 7 days
     scan-sessions.py --since 2026-07-01 --before 2026-07-15
+    scan-sessions.py --pick e5faf172 --tail 6   # read it without resuming
 
 Test hooks (all default to the real values, so they're no-ops in normal use):
 
@@ -104,7 +105,19 @@ ap.add_argument("--copy", action="store_true")
 # empty and adjacent windows don't double-count a session.
 ap.add_argument("--since", default="")
 ap.add_argument("--before", default="")
+# Read mode: with --pick, print the last N conversation messages instead of a
+# resume command. Answers "what did I decide about X in that session?" without
+# leaving the current one. default=None so `--tail 0` is distinguishable from
+# not passing it at all.
+ap.add_argument("--tail", type=nonneg_int, default=None)
 args = ap.parse_args()
+
+if args.tail is not None and not args.pick.strip():
+    ap.error("--tail needs --pick <id> to say which session to read")
+
+# Per-message cap. Generous, because asking for N messages is opting in to the
+# cost, but bounded so one long tool-shaped answer can't dominate the output.
+TAIL_MAX_CHARS = 1200
 
 # One "now" for the whole run, so two relative bounds can't be anchored a few
 # milliseconds apart. FIND_SESSION_NOW (epoch ms) overrides it so tests of a
@@ -177,6 +190,13 @@ WRAPPER_RE = re.compile(
 # A slash-command invocation inside one of those wrappers. Weakest fallback, but
 # "/fear:find-session" still identifies a session that holds no prose at all.
 COMMAND_RE = re.compile(r"<command-name>\s*(/?[^<\s]+)\s*</command-name>", re.IGNORECASE)
+# Notices the harness injects as if they were user messages — "[Request
+# interrupted by user for tool use]" and friends (13 of them in the reference
+# store). They read as conversation but nobody typed them, so --tail drops them.
+# Not folded into WRAPPER_RE: that one also gates the *title* fallback, where an
+# interrupted session should still fall through to real prose rather than being
+# treated as contentless.
+NOTICE_RE = re.compile(r"^\[Request interrupted by user[^\]]*\]$", re.IGNORECASE)
 # Record timestamps look like 2026-07-29T19:38:58.753Z — fixed width, UTC,
 # always exactly three fractional digits (all 5341 in the reference store
 # matched). That fixed width plus the trailing Z is what makes a plain STRING
@@ -278,12 +298,11 @@ def norm_branch(branch):
     return "" if b == "HEAD" else b
 
 
-def user_text(rec):
-    """Text a user record carries, or None for tool results and injected context.
+def message_text(rec):
+    """Conversation text a user/assistant record carries, or None.
 
-    Fallback source for sessions that carry no aiTitle and no inline
-    lastPrompt — see the `last-prompt` note in the scan loop. Returns wrapper
-    text as-is; the caller classifies it.
+    None for tool results, injected context, and subagent sidechains. Returns
+    wrapper text as-is; callers decide whether to keep it.
     """
     if rec.get("isSidechain") or rec.get("isMeta"):
         return None
@@ -294,12 +313,31 @@ def user_text(rec):
     if isinstance(content, str):
         parts = [content]
     elif isinstance(content, list):
-        # Text blocks only — a tool_result block is machine output, not a prompt.
+        # Text blocks only — tool_result and tool_use blocks are machine output,
+        # not something a person typed or Claude said.
         parts = [b.get("text") or "" for b in content
                  if isinstance(b, dict) and b.get("type") == "text"]
     else:
         return None
     return clean(" ".join(p for p in parts if p))
+
+
+# Kept as the old name for the title-fallback call site, which needs the wrapper
+# text through so it can pull a slash-command name out of it.
+user_text = message_text
+
+
+def transcript_text(rec):
+    """Text for --tail, or None if this record isn't part of the conversation.
+
+    Stricter than message_text: the injected wrappers are dropped rather than
+    passed through, because a transcript should show what was actually said, not
+    the plumbing around it.
+    """
+    text = message_text(rec)
+    if not text or WRAPPER_RE.search(text) or NOTICE_RE.match(text):
+        return None
+    return text
 
 
 sessions = []
@@ -344,6 +382,10 @@ if root.is_dir():
 
             title = prompt = cwd = branch = relocated = None
             fallback = fallback_cmd = ts_max = None
+            # Only collected when --tail asked for it, which implies --pick, so
+            # exactly one file reaches here — no reason to hold transcripts for
+            # every session in the store.
+            msgs = [] if args.tail is not None else None
             try:
                 text = f.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -369,6 +411,10 @@ if root.is_dir():
                 # can never match a query.
                 if t == "last-prompt" and rec.get("lastPrompt"):
                     prompt = rec["lastPrompt"]
+                if msgs is not None and t in ("user", "assistant"):
+                    tt = transcript_text(rec)
+                    if tt:
+                        msgs.append((t, tt))
                 if t == "user":
                     ut = user_text(rec)
                     if ut:
@@ -463,8 +509,51 @@ if root.is_dir():
                 # (or of mtime when there is none). Named for what it is — it is
                 # no longer the file's mtime.
                 "activeMs": active_ms,
+                "msgs": msgs,
                 "sizeKB": round(st.st_size / 1024, 1),
             })
+
+def emit_tail(s):
+    """Print the last N exchanges, oldest first.
+
+    Counts EXCHANGES, not messages. Assistant records outnumber user records
+    3.3:1 in the reference store, and 16 of 61 sessions contain a run of 4+
+    consecutive assistant messages (longest: 34), so "last N messages" routinely
+    returned nothing but Claude's own tool-call narration with the question that
+    prompted it scrolled off. An exchange is one user message plus everything
+    that followed it, which makes `--tail 3` mean "the last 3 things I asked".
+
+    Each exchange prints the prompt and the FINAL reply to it — at most 2N lines
+    for N exchanges, so output stays predictable. The assistant messages before
+    the last one in an exchange are overwhelmingly "let me check X" narration
+    around tool calls; the last one carries the conclusion.
+
+    Deliberately does NOT check that the session's directory still exists, unlike
+    emit_resume(): a session whose project folder was deleted is exactly the one
+    you can't resume and most need to read. Reading is always safe.
+
+    One message per line as `role<TAB>text`, matching the tab-separated,
+    one-record-per-line shape of the listing. Whitespace is collapsed, so
+    embedded code blocks lose their line breaks — this is for recovering what was
+    decided, not for reconstructing a file.
+    """
+    # Assistant messages before the first user message belong to no exchange and
+    # are dropped; sessions open with a user turn.
+    exchanges = []
+    for role, text in s["msgs"] or []:
+        if role == "user":
+            exchanges.append([text, None])
+        elif exchanges:
+            exchanges[-1][1] = text  # keep only the latest reply
+    if not exchanges:
+        emit("ERROR: session %s (%s) has no readable exchanges"
+             % (s["shortId"], s["id"]))
+        return
+    for prompt, reply in exchanges[len(exchanges) - args.tail:] if args.tail else []:
+        emit("user\t" + truncate(prompt, TAIL_MAX_CHARS))
+        if reply:
+            emit("assistant\t" + truncate(reply, TAIL_MAX_CHARS))
+
 
 def emit_resume(s):
     """Print the resume command, or say why there isn't one.
@@ -495,7 +584,7 @@ def emit_resume(s):
 if pick_by_id:
     matches = sorted(sessions, key=lambda s: s["sortKey"])
     if len(matches) == 1:
-        emit_resume(matches[0])
+        (emit_tail if args.tail is not None else emit_resume)(matches[0])
     elif not matches:
         emit(f"ERROR: --pick {pick} matched no session")
     else:
@@ -541,7 +630,7 @@ else:
 if pick_by_row:
     n = int(pick)
     if 1 <= n <= len(ranked):
-        emit_resume(ranked[n - 1])
+        (emit_tail if args.tail is not None else emit_resume)(ranked[n - 1])
     else:
         emit(f"ERROR: --pick {n} out of range (1-{len(ranked)})")
     sys.exit(0)

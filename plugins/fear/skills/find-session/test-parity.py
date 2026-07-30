@@ -224,8 +224,15 @@ def build_fixture(root):
     # 10. cwd that no longer exists: must still LIST (the session is real and
     #     its content is intact) but --pick must refuse to emit a resume command
     #     that would `cd` into nothing.
+    #     Carries a real exchange so --tail has something to show: reading a
+    #     session you can no longer resume is exactly what --tail is for.
     write_session(root, enc, "88888888-0000-0000-0000-000000000010", [
-        *pad(GONE, 20, "2026-02-22T12:00:00.000Z"),
+        *pad(GONE, 20, "2026-02-22T11:00:00.000Z"),
+        rec(type="user", cwd=GONE, timestamp="2026-02-22T11:30:00.000Z",
+            message={"role": "user", "content": "where did this project go"}),
+        rec(type="assistant", cwd=GONE, timestamp="2026-02-22T12:00:00.000Z",
+            message={"role": "assistant",
+                     "content": [{"type": "text", "text": "the folder is gone"}]}),
         rec(type="ai-title", aiTitle="Session in a deleted directory"),
     ], next(mt))
 
@@ -280,6 +287,36 @@ def build_fixture(root):
         *pad(PROJ, 20, "2026-02-18T12:00:00.000Z", sep=padded),
         rec(_sep=padded, type="ai-title", aiTitle="Padded JSON formatting"),
     ], 1_699_999_999)
+
+    # 17. Shaped for --tail: three exchanges, one of which has several assistant
+    #     messages (only the last must print), plus an injected interrupt notice
+    #     and a tool_result-only assistant record that must both be dropped.
+    def u(text, ts):
+        return rec(type="user", cwd=PROJ, timestamp=ts,
+                   message={"role": "user", "content": text})
+
+    def a(text, ts):
+        return rec(type="assistant", cwd=PROJ, timestamp=ts,
+                   message={"role": "assistant",
+                            "content": [{"type": "text", "text": text}]})
+
+    write_session(root, enc, "55555555-0000-0000-0000-000000000017", [
+        *pad(PROJ, 14, "2026-02-17T09:00:00.000Z"),
+        u("first question", "2026-02-17T10:00:00.000Z"),
+        a("first answer", "2026-02-17T10:01:00.000Z"),
+        # Harness-injected, arrives as a user record; nobody typed it.
+        u("[Request interrupted by user for tool use]", "2026-02-17T10:02:00.000Z"),
+        u("second question", "2026-02-17T11:00:00.000Z"),
+        a("thinking out loud", "2026-02-17T11:01:00.000Z"),
+        a("second answer", "2026-02-17T11:02:00.000Z"),
+        u("third question", "2026-02-17T12:00:00.000Z"),
+        # tool_result content only: machine output, not conversation.
+        rec(type="assistant", cwd=PROJ, timestamp="2026-02-17T12:01:00.000Z",
+            message={"role": "assistant",
+                     "content": [{"type": "tool_result", "content": "exit 0"}]}),
+        a("third answer", "2026-02-17T12:02:00.000Z"),
+        rec(type="ai-title", aiTitle="Session with three exchanges"),
+    ], 1_699_999_998)
 
 
 def works(exe, probe):
@@ -383,6 +420,18 @@ CASES = [
     ("bad since format", ["--since", "yesterday"], "rejected"),
     ("impossible since date", ["--since", "2026-13-45"], "rejected"),
     ("bad before format", ["--before", "7"], "rejected"),
+    # --tail
+    ("tail one exchange", ["--pick", "55555555", "--tail", "1"], "strict"),
+    ("tail several", ["--pick", "55555555", "--tail", "3"], "strict"),
+    ("tail overshoot", ["--pick", "55555555", "--tail", "99"], "strict"),
+    ("tail zero", ["--pick", "55555555", "--tail", "0"], "strict"),
+    ("tail no exchanges", ["--pick", "11111111", "--tail", "2"], "strict"),
+    ("tail missing cwd", ["--pick", "88888888", "--tail", "1"], "strict"),
+    ("tail by row", ["--pick", "1", "--tail", "1"], "strict"),
+    ("tail with a window", ["--since", "2w", "--pick", "1", "--tail", "1"], "strict"),
+    ("tail without pick", ["--tail", "2"], "rejected"),
+    ("tail negative", ["--pick", "55555555", "--tail", "-1"], "rejected"),
+    ("tail non-numeric", ["--pick", "55555555", "--tail", "x"], "rejected"),
     # Argument validation: both must reject these, and accept nothing here.
     ("bad flag", ["--nope"], "rejected"),
     ("negative offset", ["--offset", "-5"], "rejected"),
@@ -598,7 +647,7 @@ def main():
             ("full order follows timestamps",
              order == ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee",
                        "ffffffff", "77777777", "88888888", "ab111111", "ab211111",
-                       "44444444", "11111111", "22222222", "33333333"]),
+                       "44444444", "55555555", "11111111", "22222222", "33333333"]),
             # 44444444 uses padded JSON; it must sort by its timestamp
             # (2026-02-18) among the timestamped sessions, not fall to the mtime
             # group at the end.
@@ -662,8 +711,14 @@ def main():
         # sessions e+f sit exactly 5 days out and must be IN for `--since 5d`,
         # while 77777777 sits exactly 7 days out and must be OUT for `--before 7d`.
         def ids(args_):
+            """First tab-field of each row — the short id for a listing."""
             got, _, _ = run(rts[0][1], args_, root)
             return [r.split("\t")[0] for r in got]
+
+        def out(args_):
+            """Whole rows, for output that isn't a listing (--tail, --pick)."""
+            got, _, _ = run(rts[0][1], args_, root)
+            return got
 
         checks += [
             ("--since 3d", ids(["--since", "3d"]) ==
@@ -674,9 +729,9 @@ def main():
             ("--since 2w keeps every timestamped session",
              ids(["--since", "2w"]) ==
              ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee", "ffffffff",
-              "77777777", "88888888", "ab111111", "ab211111", "44444444"]),
+              "77777777", "88888888", "ab111111", "ab211111", "44444444", "55555555"]),
             ("--before 7d excludes the boundary", ids(["--before", "7d"]) ==
-             ["88888888", "ab111111", "ab211111", "44444444",
+             ["88888888", "ab111111", "ab211111", "44444444", "55555555",
               "11111111", "22222222", "33333333"]),
             ("--since with --before", ids(["--since", "9d", "--before", "4d"]) ==
              ["eeeeeeee", "ffffffff", "77777777", "88888888", "ab111111"]),
@@ -698,6 +753,41 @@ def main():
              sorted(ids(["--since", "6d", "--limit", "1000"])
                     + ids(["--before", "6d", "--limit", "1000"]))
              == sorted(ids(["--limit", "1000"]))),
+        ]
+
+        # E2: --tail reads a session in place. Counts EXCHANGES, not messages.
+        TAILED = "55555555"
+        checks += [
+            ("--tail 1 is the last exchange",
+             out(["--pick", TAILED, "--tail", "1"]) ==
+             ["user\tthird question", "assistant\tthird answer"]),
+            ("--tail 2 is chronological, oldest of the two first",
+             out(["--pick", TAILED, "--tail", "2"]) ==
+             ["user\tsecond question", "assistant\tsecond answer",
+              "user\tthird question", "assistant\tthird answer"]),
+            # "thinking out loud" preceded "second answer" in the same exchange.
+            ("only the final reply of an exchange is shown",
+             "assistant\tthinking out loud" not in out(["--pick", TAILED, "--tail", "3"])),
+            ("injected interrupt notice is not an exchange",
+             not any("interrupted" in r
+                     for r in out(["--pick", TAILED, "--tail", "9"]))),
+            ("tool_result-only records are not replies",
+             "assistant\texit 0" not in out(["--pick", TAILED, "--tail", "9"])),
+            ("--tail beyond the start clamps to what exists",
+             out(["--pick", TAILED, "--tail", "99"]) ==
+             out(["--pick", TAILED, "--tail", "3"])),
+            ("--tail N emits at most 2N lines",
+             len(out(["--pick", TAILED, "--tail", "2"])) <= 4),
+            ("--tail 0 emits nothing", out(["--pick", TAILED, "--tail", "0"]) == []),
+            # The whole point: a session you CANNOT resume is one you most need to
+            # read, so --tail must not inherit --pick's directory check.
+            ("--tail works where --pick refuses (missing cwd)",
+             out(["--pick", "88888888"])[0].startswith("ERROR: ")
+             and out(["--pick", "88888888", "--tail", "1"]) ==
+             ["user\twhere did this project go", "assistant\tthe folder is gone"]),
+            ("a session with no user turn reports no exchanges",
+             out(["--pick", "11111111", "--tail", "3"])[0].endswith(
+                 "has no readable exchanges")),
         ]
 
         # E4: --copy must not alter the command it copies.

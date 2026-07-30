@@ -49,9 +49,9 @@ Follow-up: `SKILL.md` states the byte-identical contract in several places
 (the sync callout, the Step 1 output description, the `--pick` notes). It has to
 be rewritten to the new contract, or the docs and the code disagree.
 
-**Done — sequencing steps 1, 2 and 3 (2026-07-30):** B6, P0, numeric-arg
-validation, B3, B4, E4, B1 and E5, all covered by `test-parity.py` and
-mutation-tested. `SKILL.md` is rewritten to the relaxed contract. Details in
+**Done — sequencing steps 1-5 (2026-07-30):** B6, P0, numeric-arg validation, B3,
+B4, E4, B1, E5, B2, E3 and E2 — all covered by `test-parity.py` and
+mutation-tested. Only step 6 (P1 → E1) and E6 remain. `SKILL.md` is rewritten to the relaxed contract. Details in
 "Already fixed" below; the items are struck from the lists. Six extra divergences
 surfaced while testing and were fixed in the same passes — see the entries under
 "Already fixed". Four of them would not have been found by reading the code, and
@@ -169,6 +169,30 @@ after the fixture had already gone green.
   `$null`/`is not None` rather than a truthiness test, so moving *out* of a repo
   (recorded as an empty branch) genuinely clears it while the many records that
   simply omit the key don't.
+- **E2** — `--pick <id> --tail <N>` prints a session's last N exchanges in place,
+  so "what did I decide about X?" no longer needs a terminal switch. Two decisions
+  that came out of measuring rather than from the original write-up:
+  - **N counts exchanges, not messages.** A first cut counted messages and was
+    visibly wrong on real data: assistant records outnumber user records **3.3:1**,
+    and **16 of 61 sessions contain a run of 4+ consecutive assistant messages**
+    (longest 34), so `--tail 4` routinely returned four fragments of Claude's
+    tool-call narration with the question that prompted it scrolled off screen. An
+    exchange — one user message plus what followed — makes `--tail 3` mean "the
+    last 3 things I asked".
+  - **Only the final reply of an exchange prints.** Otherwise a single 34-message
+    turn floods the output, and per-message truncation doesn't help because the
+    problem is the message *count*. The earlier messages in a turn are mostly
+    "let me check X" narration; the last carries the conclusion. Output is
+    therefore at most 2N lines, which is predictable enough to drive from a skill.
+    Cost: mid-turn reasoning isn't recoverable — documented, not hidden.
+  - `--tail` deliberately does **not** inherit B3's directory check. A session
+    whose folder was deleted is precisely the one that can't be resumed and most
+    needs reading. Mutation-tested both ways.
+  - Harness-injected notices (`[Request interrupted by user for tool use]`, 13 of
+    them in the reference store) arrive as *user* records and read like
+    conversation. They're filtered from transcripts via a separate pattern from
+    `WRAPPER_RE`, because that one also gates the title fallback — an interrupted
+    session should still get a title from its real prose.
 - **E3 (branch half)** — the branch is shown as an `@branch` suffix on the dir
   column, e.g. `claude-skills@master`. See the E3 entry below for why it isn't a
   separate column and why `HEAD` is suppressed. **Note this changed ranking as
@@ -380,6 +404,8 @@ Two honest ways forward, worth picking deliberately before writing code:
 Do P0 first either way; without a fixture there's no way to tell which one you
 actually shipped.
 
+### ~~E2~~ — done 2026-07-30, see "Already fixed". Original entry kept below.
+
 ### E2 — read a past session without leaving the current one
 
 The skill's sharpest limitation is that it *can't* resume for the user — it hands
@@ -468,9 +494,15 @@ Dependency-ordered, not value-ordered. Each group is one coherent review.
 3. ~~**B1** (authoritative timestamp) → **E5** (time filters).~~ **Done 2026-07-30.**
 4. ~~**B2** (branch semantics) → **E3** (show branch; relative times rejected).~~
    **Done 2026-07-30.**
-5. **E2** (`--tail`). Self-contained, high value per unit of work. ← next
+5. ~~**E2** (`--tail`).~~ **Done 2026-07-30.**
 6. **P1** (PowerShell regex extraction, corrected diagnosis) → then **E1** (deep
-   content search), after choosing E1's option 1 or 2.
+   content search), after choosing E1's option 1 or 2. ← next, and the last step
+
+Only **E1**, **P1**, **E6** and the smaller notes remain. Note that E2 has taken
+some pressure off E1: "find the session where we discussed X" is often really
+"remind me what we decided", and `--tail` answers that once the session is
+identified — so E1's value now rests on the cases where the *title* genuinely
+doesn't identify the session at all.
 
 **B5** and the remaining smaller notes are cosmetic; fold them into whichever
 pass already touches the relevant lines.

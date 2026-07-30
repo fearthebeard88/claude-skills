@@ -12,6 +12,7 @@
 #   scan-sessions.ps1 --pick e5faf172 --copy # ...and copy it to the clipboard
 #   scan-sessions.ps1 --since 7d             # active in the last 7 days
 #   scan-sessions.ps1 --since 2026-07-01 --before 2026-07-15
+#   scan-sessions.ps1 --pick e5faf172 --tail 6  # read it without resuming
 #
 # NOTE: this file is saved as UTF-8 WITH a BOM, deliberately. Windows PowerShell
 # 5.1 reads a BOM-less .ps1 as ANSI, which turns any UTF-8 multi-byte character
@@ -101,10 +102,15 @@ $CopyCmd = $false
 # adjacent windows don't double-count a session.
 $Since = ""
 $Before = ""
+# Read mode: with --pick, print the last N conversation messages instead of a
+# resume command. Answers "what did I decide about X in that session?" without
+# leaving the current one. $null (not 0) when absent, so `--tail 0` is
+# distinguishable from not passing it at all.
+$Tail = $null
 # Comparisons are case-SENSITIVE (-ceq / -ccontains) because argparse is: to
 # Python, "--LIMIT" is an unknown argument, and the two must agree on that.
 $ValueFlags = @("--query", "--limit", "--min-size-kb", "--pick", "--offset",
-                "--since", "--before")
+                "--since", "--before", "--tail")
 $Unknown = [System.Collections.ArrayList]::new()
 for ($i = 0; $i -lt $args.Count; $i++) {
     $a = [string]$args[$i]
@@ -122,6 +128,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         elseif ($a -ceq "--limit")       { $Limit     = ParseNonNegInt $a $v }
         elseif ($a -ceq "--offset")      { $Offset    = ParseNonNegInt $a $v }
         elseif ($a -ceq "--min-size-kb") { $MinSizeKB = ParseNonNegNum $a $v }
+        elseif ($a -ceq "--tail")        { $Tail      = ParseNonNegInt $a $v }
     } else {
         # Previously ignored silently, so a typo'd flag failed loudly in Python
         # and quietly here — the listing just came back with default settings.
@@ -133,6 +140,9 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 # After the loop, so a bad value on a known flag is reported first — argparse
 # type-checks during parsing and reports unrecognized args only afterwards.
 if ($Unknown.Count -gt 0) { ArgError "unrecognized arguments: $($Unknown -join ' ')" }
+if ($null -ne $Tail -and -not $Pick.Trim()) {
+    ArgError "--tail needs --pick <id> to say which session to read"
+}
 
 $root = $env:FIND_SESSION_ROOT
 if (-not $root) { $root = Join-Path (Join-Path $HOME ".claude") "projects" }
@@ -165,6 +175,16 @@ $WrapperRe = '^<(local-command-caveat|local-command-stdout|local-command-stderr|
 # A slash-command invocation inside one of those wrappers. Weakest fallback, but
 # "/fear:find-session" still identifies a session that holds no prose at all.
 $CommandRe = '<command-name>\s*(/?[^<\s]+)\s*</command-name>'
+# Notices the harness injects as if they were user messages - "[Request
+# interrupted by user for tool use]" and friends (13 of them in the reference
+# store). They read as conversation but nobody typed them, so --tail drops them.
+# Not folded into $WrapperRe: that one also gates the *title* fallback, where an
+# interrupted session should still fall through to real prose rather than being
+# treated as contentless.
+$NoticeRe = '^\[Request interrupted by user[^\]]*\]$'
+# Per-message cap for --tail. Generous, because asking for N messages is opting
+# in to the cost, but bounded so one long answer can't dominate the output.
+$TailMaxChars = 1200
 # Record timestamps look like 2026-07-29T19:38:58.753Z - fixed width, UTC, always
 # exactly three fractional digits (all 5341 in the reference store matched). That
 # fixed width plus the trailing Z is what makes an ORDINAL STRING comparison
@@ -267,10 +287,10 @@ function NormBranch($branch) {
 }
 
 function UserText($rec) {
-    # Text a user record carries, or $null for tool results and injected
-    # context. Fallback source for sessions that carry no aiTitle and no inline
-    # lastPrompt — see the `last-prompt` note in the scan loop. Returns wrapper
-    # text as-is; the caller classifies it.
+    # Conversation text a user/assistant record carries, or $null for tool
+    # results, injected context and subagent sidechains. Returns wrapper text
+    # as-is; callers decide whether to keep it. The title fallback needs the
+    # wrapper text through so it can pull a slash-command name out of it.
     if ($rec.isSidechain -or $rec.isMeta) { return $null }
     $msg = $rec.message
     if (-not $msg) { return $null }
@@ -286,6 +306,17 @@ function UserText($rec) {
     }
     if (-not $parts) { return $null }
     return (Clean ($parts -join ' '))
+}
+
+function TranscriptText($rec) {
+    # Text for --tail, or $null if this record isn't part of the conversation.
+    # Stricter than UserText: the injected wrappers and harness notices are
+    # dropped rather than passed through, because a transcript should show what
+    # was actually said, not the plumbing around it.
+    $text = UserText $rec
+    if (-not $text) { return $null }
+    if ($text -match $WrapperRe -or $text -match $NoticeRe) { return $null }
+    return $text
 }
 
 $sessions = [System.Collections.ArrayList]::new()
@@ -314,6 +345,11 @@ if (Test-Path $root) {
             $title = $null; $prompt = $null; $cwd = $null; $branch = $null
             $relocated = $null; $fallback = $null; $fallbackCmd = $null
             $tsMax = $null
+            # Only collected when --tail asked for it, which implies --pick, so
+            # exactly one file reaches here - no reason to hold transcripts for
+            # every session in the store.
+            $msgs = $null
+            if ($null -ne $Tail) { $msgs = [System.Collections.ArrayList]::new() }
             # ReadLines throws on a file held without sharing by another process,
             # a permission-denied file, or an unhydrated OneDrive placeholder.
             # With $ErrorActionPreference = Stop that terminated the entire scan
@@ -337,6 +373,10 @@ if (Test-Path $root) {
                     # fallback — otherwise those sessions list as "(untitled)"
                     # with an empty preview and can never match a query.
                     if ($t -eq "last-prompt" -and $rec.lastPrompt) { $prompt = $rec.lastPrompt }
+                    if ($null -ne $msgs -and ($t -eq "user" -or $t -eq "assistant")) {
+                        $tt = TranscriptText $rec
+                        if ($tt) { [void]$msgs.Add(@($t, $tt)) }
+                    }
                     if ($t -eq "user") {
                         $ut = UserText $rec
                         if ($ut) {
@@ -464,6 +504,7 @@ if (Test-Path $root) {
                 # (or of mtime when there is none). Named for what it is - it is
                 # no longer the file's mtime.
                 activeMs   = $activeMs
+                msgs       = $msgs
                 sizeKB     = [math]::Round($file.Length / 1KB, 1)
             })
         }
@@ -513,6 +554,55 @@ function CopyToClipboard($text) {
     }
 }
 
+function EmitTail($s) {
+    # Print the last N exchanges, oldest first.
+    #
+    # Counts EXCHANGES, not messages. Assistant records outnumber user records
+    # 3.3:1 in the reference store, and 16 of 61 sessions contain a run of 4+
+    # consecutive assistant messages (longest: 34), so "last N messages"
+    # routinely returned nothing but Claude's own tool-call narration with the
+    # question that prompted it scrolled off. An exchange is one user message
+    # plus everything that followed it, so `--tail 3` means "the last 3 things I
+    # asked".
+    #
+    # Each exchange prints the prompt and the FINAL reply to it - at most 2N
+    # lines for N exchanges, so output stays predictable. The assistant messages
+    # before the last one in an exchange are overwhelmingly "let me check X"
+    # narration around tool calls; the last one carries the conclusion.
+    #
+    # Deliberately does NOT check that the session's directory still exists,
+    # unlike EmitResume: a session whose project folder was deleted is exactly
+    # the one you can't resume and most need to read. Reading is always safe.
+    #
+    # One message per line as `role<TAB>text`, matching the tab-separated,
+    # one-record-per-line shape of the listing. Whitespace is collapsed, so
+    # embedded code blocks lose their line breaks - this is for recovering what
+    # was decided, not for reconstructing a file.
+    #
+    # Assistant messages before the first user message belong to no exchange and
+    # are dropped; sessions open with a user turn.
+    $exchanges = [System.Collections.ArrayList]::new()
+    foreach ($m in @($s.msgs)) {
+        if ($m[0] -eq "user") {
+            [void]$exchanges.Add(@($m[1], $null))
+        } elseif ($exchanges.Count -gt 0) {
+            $exchanges[$exchanges.Count - 1][1] = $m[1]  # keep only the latest reply
+        }
+    }
+    if ($exchanges.Count -eq 0) {
+        Emit "ERROR: session $($s.shortId) ($($s.id)) has no readable exchanges"
+        return
+    }
+    if ($Tail -le 0) { return }
+    $start = [Math]::Max(0, $exchanges.Count - $Tail)
+    for ($k = $start; $k -lt $exchanges.Count; $k++) {
+        Emit ("user`t" + (Truncate $exchanges[$k][0] $TailMaxChars))
+        if ($exchanges[$k][1]) {
+            Emit ("assistant`t" + (Truncate $exchanges[$k][1] $TailMaxChars))
+        }
+    }
+}
+
 function EmitResume($s) {
     # Checking the directory first is what makes the two-line command safe: the
     # `cd` can't silently fail and leave `claude` to start a fresh session in the
@@ -539,7 +629,7 @@ function EmitResume($s) {
 if ($PickById) {
     $matched = @($sessions | Sort-Object sortKey)
     if ($matched.Count -eq 1) {
-        EmitResume $matched[0]
+        if ($null -ne $Tail) { EmitTail $matched[0] } else { EmitResume $matched[0] }
     } elseif ($matched.Count -eq 0) {
         Emit "ERROR: --pick $Pick matched no session"
     } else {
@@ -590,7 +680,7 @@ $rankedArr = @($ranked)
 if ($PickByRow) {
     $n = [int]$Pick
     if ($n -ge 1 -and $n -le $rankedArr.Count) {
-        EmitResume $rankedArr[$n - 1]
+        if ($null -ne $Tail) { EmitTail $rankedArr[$n - 1] } else { EmitResume $rankedArr[$n - 1] }
     } else {
         Emit "ERROR: --pick $n out of range (1-$($rankedArr.Count))"
     }
