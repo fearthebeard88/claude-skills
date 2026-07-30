@@ -96,8 +96,12 @@ non-numeric value, and a negative `--limit`/`--offset`/`--min-size-kb`. If you
 see an `ERROR:` line, fix the invocation — don't treat it as an empty result.
 
 **List output is tab-separated, display-only**, one row per line:
-`short-id⇥title⇥dir⇥last-active` (dir is a short label: `~` for home, else the
-folder basename; `+⇥preview` with `--preview`). Already filtered/ranked,
+`short-id⇥title⇥dir⇥last-active` (`+⇥preview` with `--preview`). `dir` is a short
+label — `~` for home, else the folder basename — with `@branch` appended when the
+session was on a named git branch, e.g. `claude-skills@master`. Most rows have no
+suffix: only about 1 in 9 sessions is in a repo, and the placeholder git records
+when there's no named branch (`HEAD`) is suppressed rather than printed. Already
+filtered/ranked,
 newest-active first when no query. The short id is the first 8 hex chars of the
 session uuid — it's the handle you pass to `--pick`. Full uuids and full paths
 stay out of the listing; they're only needed to resume, so they're deferred to
@@ -241,8 +245,9 @@ Number rows by **global rank**: `offset + 1`, `offset + 2`, … (so page 2 with
 `--offset 15` starts at `16.`). Those numbers are just for the user to point at.
 **Don't print the short ids** — they're noise to the user — but **do keep the
 row-number → short-id mapping from the scanner output**, because the short id
-is what Step 3 resumes by. `dir` is the script's short label (`~`/basename);
-offer the full path on request.
+is what Step 3 resumes by. Pass `dir` through as the scanner gives it, including
+any `@branch` suffix — that suffix is often the only thing distinguishing two
+sessions in the same repo. Offer the full path on request.
 
 A listing is **one page of 15 by default** (the script's `--limit` default) —
 don't pass `--limit` unless the user asks for a different count. When more rows
@@ -338,6 +343,10 @@ command in a copy-ready code block.
   genuinely contentless stub is `(untitled)` now.
 - Scanning is depth-1 only (`projects/<dir>/<id>.jsonl`); nested `subagents/`
   and `workflows/` transcript artifacts are never treated as sessions.
+- **The branch is the one the session ended on**, matching `cwd` (which is also
+  the last one seen). A session that started on `master` and moved to a feature
+  branch reports the feature branch. It's searchable via `--query`, but `HEAD` is
+  normalised away first, so querying `head` won't match every non-repo session.
 - **Relocated sessions** (you `/cd`'d): a `/cd` moves the session's file into the
   destination directory's folder and records `relocated`/`relocatedCwd`. The
   scanner reports the **destination** (last `relocatedCwd`, else last `cwd`) as

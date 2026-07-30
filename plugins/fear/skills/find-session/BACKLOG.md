@@ -163,6 +163,18 @@ after the fixture had already gone green.
   - `--pick <id>` ignores the window (an id is exact — same rule as
     `--min-size-kb`); `--pick <N>` respects it, since N indexes the filtered
     ranking.
+- **B2** — `gitBranch` is now last-wins, matching `cwd`. A session that started on
+  `master` and moved to a feature branch reports the feature branch, which is both
+  the more useful answer and the one consistent with how `cwd` already behaved.
+  `$null`/`is not None` rather than a truthiness test, so moving *out* of a repo
+  (recorded as an empty branch) genuinely clears it while the many records that
+  simply omit the key don't.
+- **E3 (branch half)** — the branch is shown as an `@branch` suffix on the dir
+  column, e.g. `claude-skills@master`. See the E3 entry below for why it isn't a
+  separate column and why `HEAD` is suppressed. **Note this changed ranking as
+  well as display**: normalising `HEAD` to empty removes it from the search
+  haystack, so a query for `head` no longer matches ~90% of sessions at score 1.
+  That's the intent, but it is a scoring change, not only a cosmetic one.
 
 - `--pick` row-number drift — sessions now resume by stable short id.
 - `(untitled)` and unsearchable sessions caused by the `leafUuid`-only
@@ -182,6 +194,11 @@ after the fixture had already gone green.
 
 Listed most severe first. ~~B6~~, ~~B4~~, ~~B3~~ and ~~B1~~ are fixed (see
 "Already fixed" above). B2 is now the only substantive open bug.
+
+### ~~B2~~ / ~~E3~~ — done 2026-07-30, see "Already fixed"
+
+Kept below for the reasoning, since E3's second half was **rejected** on the
+data rather than implemented.
 
 ### B2 — `gitBranch` is taken first-wins while `cwd` is taken last-wins
 
@@ -384,9 +401,22 @@ tells you nothing for most sessions, because most sessions start in the home
 directory. Meanwhile `branch` is collected, fed into search scoring, and then
 discarded before output.
 
-- Show the git branch (see B2 first — the value is currently first-non-empty).
-- Consider relative times ("2h ago", "3d ago") instead of absolute timestamps.
-  For a recency-ordered list that's easier to scan at the same token cost.
+- ~~Show the git branch~~ — **done, but not as written.** The raw value is
+  unusable as a column: **55 of 62 sessions record `HEAD`**, not a branch name,
+  and 52 of those 55 were simply not in a git repo. Printing it would have put a
+  meaningless `HEAD` on ~90% of rows — a worse version of the very `~` problem
+  this item was raised to fix. Shipped instead as an `@branch` suffix on the
+  existing dir column, shown only for a real branch (6 rows of 61 here), with
+  `HEAD` normalised away at the source so it stays out of the search haystack
+  too.
+- ~~Consider relative times ("2h ago", "3d ago")~~ — **rejected on the data.**
+  Sessions cluster heavily on single days: **19 share 2026-07-06** and 8 share
+  2026-07-29. At day granularity those 19 rows all read "24d ago" and become
+  indistinguishable, while the absolute time-of-day (17:35 vs 08:16) is exactly
+  what separates them. Relative times would also make output non-deterministic
+  between runs. `--since`/`--before` (E5) already covers the "last week" style of
+  request, which was the underlying need. Not worth revisiting unless the store's
+  shape changes a lot.
 
 ### E6 — group or flag near-duplicate sessions
 
@@ -436,8 +466,9 @@ Dependency-ordered, not value-ordered. Each group is one coherent review.
    validation + the `SKILL.md` contract rewrite.~~ **Done 2026-07-30.**
 2. ~~**Resume-command pass: B3 + B4 + E4.**~~ **Done 2026-07-30.**
 3. ~~**B1** (authoritative timestamp) → **E5** (time filters).~~ **Done 2026-07-30.**
-4. **B2** (branch semantics) → then **E3** (show branch, relative times). ← next
-5. **E2** (`--tail`). Self-contained, high value per unit of work.
+4. ~~**B2** (branch semantics) → **E3** (show branch; relative times rejected).~~
+   **Done 2026-07-30.**
+5. **E2** (`--tail`). Self-contained, high value per unit of work. ← next
 6. **P1** (PowerShell regex extraction, corrected diagnosis) → then **E1** (deep
    content search), after choosing E1's option 1 or 2.
 

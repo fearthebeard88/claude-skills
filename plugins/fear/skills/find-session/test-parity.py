@@ -161,9 +161,15 @@ def build_fixture(root):
         rec(type="last-prompt", leafUuid="dead-beef"),
     ], next(mt))
 
-    # 3. cwd == home -> the `~` dir label.
+    # 3. cwd == home -> the `~` dir label. gitBranch "HEAD" is the placeholder
+    #    recorded when there is no named branch, so it must NOT appear in the dir
+    #    column (it would otherwise show on ~90% of real rows) and must not be
+    #    searchable.
     write_session(root, "C--fixture-home", "cccccccc-0000-0000-0000-000000000003", [
         *pad(FAKE_HOME, 20, "2026-02-27T12:00:00.000Z"),
+        rec(type="user", cwd=FAKE_HOME, gitBranch="HEAD",
+            timestamp="2026-02-27T12:00:00.000Z",
+            message={"role": "user", "content": "no repo here"}),
         rec(type="ai-title", aiTitle="Session in the home directory"),
         rec(type="last-prompt", lastPrompt="what did we decide"),
     ], next(mt))
@@ -549,6 +555,32 @@ def main():
              any(r.split("\t")[1] == "/fear:find-session" for r in rows)),
             ("session with missing cwd still listed",
              any(r.startswith("88888888") for r in rows)),
+        ]
+
+        # B2 + E3: the branch is the LAST one seen (matching cwd), shown appended
+        # to the dir column, and the "HEAD" placeholder is suppressed everywhere.
+        def dircol(prefix):
+            for r in rows:
+                if r.startswith(prefix):
+                    return r.split("\t")[2]
+            return None
+
+        checks += [
+            # Session 1 starts on master and moves to feature/x. first-wins would
+            # print proj@master here.
+            ("branch is last-wins, not first-wins", dircol("aaaaaaaa") == "proj@feature/x"),
+            ("HEAD placeholder not shown as a branch", dircol("cccccccc") == "~"),
+            ("no branch means no @ suffix", dircol("bbbbbbbb") == "proj"),
+            ("relocated session keeps its dir label", dircol("dddddddd") == "moved"),
+            # HEAD must not be searchable either, or the query "head" matches
+            # nearly every real session at score 1 and buries the real hits.
+            ("HEAD is not searchable",
+             run(rts[0][1], ["--query", "HEAD", "--limit", "1000"], root)[0] == []),
+            # A real branch name still is.
+            ("real branch is searchable",
+             [r.split("\t")[0] for r in
+              run(rts[0][1], ["--query", "feature/x", "--limit", "1000"], root)[0]]
+             == ["aaaaaaaa"]),
         ]
 
         # B1: ordering and the lastActive column come from record timestamps, not

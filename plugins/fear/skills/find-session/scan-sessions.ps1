@@ -247,6 +247,25 @@ function Truncate($s, $n) {
     return $s
 }
 
+function NormBranch($branch) {
+    # A real branch name, or "" when the session wasn't on one.
+    #
+    # "HEAD" is what gets recorded when there's no named branch - 52 of the 55
+    # HEAD values in the reference store were simply sessions outside a git repo
+    # (the other 3 were detached, which is indistinguishable from here).
+    # Normalised away once, at the source, so the same value feeds both the dir
+    # column and the search haystack:
+    #
+    #   - as a column it would otherwise print a meaningless "HEAD" on ~90% of
+    #     rows, which is exactly the low-signal problem showing the branch was
+    #     meant to fix
+    #   - in the haystack it made the query "head" match almost every session at
+    #     score 1, burying real hits
+    $b = Clean $branch
+    if (-not $b -or $b -ceq "HEAD") { return "" }
+    return $b
+}
+
 function UserText($rec) {
     # Text a user record carries, or $null for tool results and injected
     # context. Fallback source for sessions that carry no aiTitle and no inline
@@ -333,7 +352,15 @@ if (Test-Path $root) {
                     # A relocation records its destination explicitly — trust it
                     # over any transient trailing cwd.
                     if ($t -eq "relocated" -and $rec.relocatedCwd) { $relocated = $rec.relocatedCwd }
-                    if (-not $branch -and $null -ne $rec.gitBranch) { $branch = $rec.gitBranch }
+                    # LAST branch, not the first, to match how cwd is taken: a
+                    # session that started on master and moved to a feature
+                    # branch reports the branch it ended on. Previously
+                    # first-non-empty-wins, which answered "where did this work
+                    # start" while cwd answered "where did it end up" - the two
+                    # are now consistent. A $null test rather than truthiness, so
+                    # moving out of a repo (which records an empty branch) does
+                    # clear it, while the many records that omit the key don't.
+                    if ($null -ne $rec.gitBranch) { $branch = $rec.gitBranch }
                     # MAXIMUM timestamp, not the last one seen: 57 of 73 sessions
                     # in the reference store carry out-of-order timestamps, and in
                     # 8 of them the final record is not the latest. Taking the
@@ -388,7 +415,7 @@ if (Test-Path $root) {
             $previewFull = $prompt; if (-not $previewFull) { $previewFull = $fallback }
             if (-not $previewFull) { $previewFull = "" }
             $preview = Truncate $previewFull 140
-            $br = Clean $branch; if (-not $br) { $br = "" }
+            $br = NormBranch $branch
 
             # "Last active" is the newest conversation record, not the file's
             # mtime. mtime is reset by anything that rewrites the file without
@@ -576,6 +603,10 @@ if ($PickByRow) {
 # contain a tab/newline.
 $lines = foreach ($s in @($rankedArr | Select-Object -Skip $Offset -First $Limit)) {
     $label = if ($s.cwd -eq $HomeDir) { "~" } else { (($s.cwd -replace '\\', '/').TrimEnd('/') -split '/')[-1] }
+    # `@branch` folded into the existing dir column rather than added as a new
+    # one: only ~11% of sessions have a real branch, so a separate column would be
+    # empty on nearly every row while costing width on all of them.
+    if ($s.branch) { $label = $label + "@" + $s.branch }
     $cols = @($s.shortId, $s.title, $label, $s.lastActive)
     if ($ShowPreview) { $cols += $s.preview }
     $cols -join "`t"

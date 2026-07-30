@@ -260,6 +260,24 @@ def truncate(s, n):
     return s[:n] + "..." if len(s) > n else s
 
 
+def norm_branch(branch):
+    """A real branch name, or "" when the session wasn't on one.
+
+    "HEAD" is what gets recorded when there's no named branch — 52 of the 55
+    HEAD values in the reference store were simply sessions outside a git repo
+    (the other 3 were detached, which is indistinguishable from here). Normalised
+    away once, at the source, so the same value feeds both the dir column and the
+    search haystack:
+
+      - as a column it would otherwise print a meaningless "HEAD" on ~90% of rows,
+        which is exactly the low-signal problem showing the branch was meant to fix
+      - in the haystack it made the query "head" match almost every session at
+        score 1, burying real hits
+    """
+    b = clean(branch) or ""
+    return "" if b == "HEAD" else b
+
+
 def user_text(rec):
     """Text a user record carries, or None for tool results and injected context.
 
@@ -368,7 +386,15 @@ if root.is_dir():
                 # any transient trailing cwd.
                 if t == "relocated" and rec.get("relocatedCwd"):
                     relocated = rec["relocatedCwd"]
-                if not branch and rec.get("gitBranch") is not None:
+                # LAST branch, not the first, to match how cwd is taken: a
+                # session that started on master and moved to a feature branch
+                # reports the branch it ended on. Previously first-non-empty-wins,
+                # which answered "where did this work start" while cwd answered
+                # "where did it end up" — the two are now consistent. `is not
+                # None` rather than truthiness, so moving out of a repo (which
+                # records an empty branch) genuinely clears it, while the many
+                # records that simply omit the key don't.
+                if rec.get("gitBranch") is not None:
                     branch = rec["gitBranch"]
                 # MAXIMUM timestamp, not the last one seen: 57 of 73 sessions in
                 # the reference store carry out-of-order timestamps, and in 8 of
@@ -431,7 +457,7 @@ if root.is_dir():
                 "title": title,
                 "preview": preview,
                 "cwd": cwd,
-                "branch": clean(branch) or "",
+                "branch": norm_branch(branch),
                 "lastActive": last_active,
                 # Sort key: epoch milliseconds of the newest conversation record
                 # (or of mtime when there is none). Named for what it is — it is
@@ -535,9 +561,19 @@ def dirlabel(cwd):
     return cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or cwd
 
 
+def dircol(s):
+    """dir, with `@branch` appended when the session was on a named branch.
+
+    Folded into the existing column rather than added as a new one: only ~11% of
+    sessions have a real branch, so a separate column would be empty on nearly
+    every row while costing width on all of them.
+    """
+    return dirlabel(s["cwd"]) + ("@" + s["branch"] if s["branch"] else "")
+
+
 lines = []
 for s in ranked[args.offset : args.offset + args.limit]:
-    cols = [s["shortId"], s["title"], dirlabel(s["cwd"]), s["lastActive"]]
+    cols = [s["shortId"], s["title"], dircol(s), s["lastActive"]]
     if args.preview:
         cols.append(s["preview"])
     lines.append("\t".join(cols))
